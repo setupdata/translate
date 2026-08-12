@@ -16,6 +16,41 @@ function responseTooLarge(partialTranslation) {
   return error;
 }
 
+function parseChatCompletionsResponse(body) {
+  let response;
+  try {
+    response = JSON.parse(body);
+  } catch {
+    throw protocolError("无法解析 Chat Completions JSON。", "");
+  }
+  if (
+    !response ||
+    !Array.isArray(response.choices) ||
+    response.choices.length !== 1 ||
+    !response.choices[0] ||
+    !response.choices[0].message ||
+    typeof response.choices[0].message !== "object"
+  ) {
+    throw protocolError("Chat Completions 响应结构无效。", "");
+  }
+  const message = response.choices[0].message;
+  if (
+    message.tool_calls !== undefined ||
+    message.function_call !== undefined ||
+    message.audio !== undefined
+  ) {
+    throw protocolError("Chat Completions 返回了非文本内容。", "");
+  }
+  if (typeof message.content !== "string") {
+    throw protocolError("Chat Completions 返回了非文本内容。", "");
+  }
+  const output = createOutputAccumulator();
+  if (!output.append(message.content)) {
+    throw responseTooLarge(output.text());
+  }
+  return output.text();
+}
+
 function createChatSseParser({ onTextDelta = () => undefined } = {}) {
   const decoder = new StringDecoder("utf8");
   const output = createOutputAccumulator();
@@ -144,4 +179,5 @@ function createChatSseParser({ onTextDelta = () => undefined } = {}) {
 
 module.exports = {
   createChatSseParser,
+  parseChatCompletionsResponse,
 };

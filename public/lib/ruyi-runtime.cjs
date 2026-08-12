@@ -1,9 +1,10 @@
 const SETTINGS_KEY = "ruyi.settings.v1";
 const API_KEY_PREFIX = "ruyi.secret.api-key.";
 const { randomBytes } = require("crypto");
-const { createChatSseParser } = require("./chat-sse-parser.cjs");
-const { TRANSLATION_SYSTEM_PROMPT } = require("./prompts.cjs");
 const { inspectSourceText } = require("./text-limits.cjs");
+const {
+  createTranslationProtocolOperation,
+} = require("./translation-protocol.cjs");
 
 const DEEPSEEK_FLASH_PRESET = Object.freeze({
   id: "deepseek-flash",
@@ -411,7 +412,10 @@ function createRuyiRuntime({
           preview: {
             serviceName: configuration.name,
             normalizedTranslationUrl,
-            protocol: "Chat Completions",
+            protocol:
+              configuration.protocol === "responses"
+                ? "Responses"
+                : "Chat Completions",
             model: configuration.model,
             dataSent: [
               "源文本",
@@ -441,15 +445,6 @@ function createRuyiRuntime({
       analysis: null,
       sourceText: request.sourceText,
     };
-    const body = JSON.stringify({
-      model: configuration.model,
-      messages: [
-        { role: "system", content: TRANSLATION_SYSTEM_PROMPT },
-        { role: "user", content: JSON.stringify(input) },
-      ],
-      stream: configuration.stream,
-      thinking: { type: "disabled" },
-    });
     if (activeTask) {
       activeTask.controller.abort();
     }
@@ -463,14 +458,32 @@ function createRuyiRuntime({
         // Progress observers are presentation concerns and must not break a request.
       }
     }
-    const parser = createChatSseParser({
-      onTextDelta(delta) {
-        if (activeTask !== task || controller.signal.aborted) {
-          return;
-        }
-        emitProgress({ type: "text_delta", taskId: request.taskId, delta });
-      },
-    });
+    let protocolOperation;
+    try {
+      protocolOperation = createTranslationProtocolOperation({
+        configuration,
+        input,
+        onTextDelta(delta) {
+          if (activeTask !== task || controller.signal.aborted) {
+            return;
+          }
+          emitProgress({ type: "text_delta", taskId: request.taskId, delta });
+        },
+      });
+    } catch {
+      if (activeTask === task) {
+        activeTask = null;
+      }
+      return {
+        status: "failed",
+        taskId: request.taskId,
+        sourceRetained: true,
+        error: {
+          code: "configuration_error",
+          message: errorMessage("configuration_error"),
+        },
+      };
+    }
     emitProgress({ type: "started", taskId: request.taskId });
 
     try {
@@ -482,14 +495,14 @@ function createRuyiRuntime({
           "Content-Type": "application/json; charset=utf-8",
           Authorization: `Bearer ${apiKey}`,
         },
-        body,
+        body: protocolOperation.body,
         signal: controller.signal,
         onData(chunk) {
           if (activeTask !== task || controller.signal.aborted) {
             return;
           }
           sawData = true;
-          parser.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          protocolOperation.push(chunk);
         },
       });
 
@@ -518,11 +531,7 @@ function createRuyiRuntime({
         };
       }
 
-      if (!sawData && response.body) {
-        parser.push(Buffer.from(response.body));
-      }
-      parser.end();
-      const translation = parser.translation();
+      const translation = protocolOperation.finish(response.body, sawData);
       emitProgress({
         type: "finished",
         taskId: request.taskId,
@@ -537,7 +546,7 @@ function createRuyiRuntime({
       const partialTranslation =
         error && typeof error.partialTranslation === "string"
           ? error.partialTranslation
-          : parser.translation();
+          : protocolOperation.partialTranslation();
       emitProgress({
         type: "finished",
         taskId: request.taskId,

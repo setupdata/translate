@@ -8,8 +8,8 @@ export type TargetLanguage = {
 export type ServiceConfigurationView = {
   id: string;
   name: string;
-  type: "deepseek-official";
-  protocol: "chat-completions";
+  type: "deepseek-official" | "custom";
+  protocol: "chat-completions" | "responses";
   translationUrl: string;
   modelListUrl: string;
   authentication: "bearer";
@@ -83,7 +83,7 @@ export type StandardTranslationResult =
       preview: {
         serviceName: string;
         normalizedTranslationUrl: string;
-        protocol: "Chat Completions";
+        protocol: "Chat Completions" | "Responses";
         model: string;
         dataSent: string[];
         callCount: 1;

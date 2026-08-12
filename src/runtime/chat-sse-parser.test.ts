@@ -10,6 +10,30 @@ const parserPath = resolve(
 );
 
 describe("Chat Completions SSE parser", () => {
+  it("parses a normal text response and rejects tool output", () => {
+    const { parseChatCompletionsResponse } = require(parserPath);
+
+    expect(
+      parseChatCompletionsResponse(
+        JSON.stringify({ choices: [{ message: { content: "你好" } }] }),
+      ),
+    ).toBe("你好");
+    expect(() =>
+      parseChatCompletionsResponse(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "你好",
+                tool_calls: [{ id: "call-1" }],
+              },
+            },
+          ],
+        }),
+      ),
+    ).toThrow(expect.objectContaining({ code: "protocol_error" }));
+  });
+
   it("handles arbitrary UTF-8 chunk boundaries and emits only content deltas", () => {
     const { createChatSseParser } = require(parserPath);
     const onTextDelta = vi.fn();
