@@ -137,6 +137,28 @@ describe("Ruyi runtime", () => {
     expect(JSON.stringify([...cryptoStorage.values.values()])).not.toContain(
       sourceText,
     );
+    expect(runtime.getCurrentTranslation()).toMatchObject({
+      phase: "needs_configuration",
+      stale: false,
+      inputs: {
+        sourceText,
+        serviceConfigurationId: "deepseek-flash",
+        qualityMode: "standard",
+        additionalRequirements: "",
+        taskTerms: [],
+      },
+      task: { taskId: "task-1", sourceText },
+      result: { status: "configuration_required", reason: "missing_api_key" },
+    });
+    expect(Object.isFrozen(runtime.getCurrentTranslation())).toBe(true);
+
+    const restartedRuntime = createRuyiRuntime({
+      plainStorage,
+      cryptoStorage,
+      transport,
+    });
+    expect(restartedRuntime.getCurrentTranslation()).toBeNull();
+    expect(JSON.stringify([...plainStorage.values.values()])).not.toContain(sourceText);
   });
 
   it("reports a missing configuration without dereferencing damaged settings", async () => {
@@ -287,6 +309,45 @@ describe("Ruyi runtime", () => {
     expect(transport.request).not.toHaveBeenCalled();
   });
 
+  it("invalidates a first-send confirmation when task options change", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = { request: vi.fn() };
+    const runtime = createRuyiRuntime({
+      plainStorage,
+      cryptoStorage,
+      transport,
+      tokenFactory: () => "confirmation-options",
+    });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const request = {
+      taskId: "task-confirmation-options",
+      sourceText: "Hello",
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+      additionalRequirements: "Keep headings short.",
+      taskTerms: [{ sourceTerm: "heading", preferredTarget: "标题" }],
+    };
+    const preview = await runtime.startStandardTranslation(request);
+
+    const result = await runtime.startStandardTranslation({
+      ...request,
+      additionalRequirements: "Use a formal tone.",
+      confirmationToken: preview.confirmationToken,
+    });
+
+    expect(result).toEqual({
+      status: "validation_error",
+      reason: "invalid_confirmation",
+      sourceRetained: true,
+    });
+    expect(transport.request).not.toHaveBeenCalled();
+  });
+
   it("sends one fixed standard full-document request after confirmation", async () => {
     const { createRuyiRuntime } = require(runtimePath);
     const plainStorage = memoryStorage();
@@ -391,6 +452,52 @@ describe("Ruyi runtime", () => {
     });
     expect(copyText).toHaveBeenCalledWith("你好");
     expect(pasteText).toHaveBeenCalledWith("你好");
+
+    const completedSnapshot = runtime.getCurrentTranslation();
+    expect(completedSnapshot).toMatchObject({
+      phase: "completed",
+      stale: false,
+      inputs: { sourceText: request.sourceText },
+      task: { taskId: request.taskId, sourceText: request.sourceText },
+      partialTranslation: "你好",
+      result: { status: "completed", translation: "你好" },
+    });
+    const callsBeforeEdit = transport.request.mock.calls.length;
+    const editedSnapshot = runtime.updateCurrentTranslationInputs({
+      ...completedSnapshot.inputs,
+      sourceText: "edited source",
+      targetLanguage: {
+        kind: "preset",
+        id: "en",
+        modelLabel: "English",
+      },
+      serviceConfigurationId: "another-service",
+      additionalRequirements: "Use concise wording.",
+      taskTerms: [{ sourceTerm: "world", preferredTarget: "世界" }],
+    });
+    expect(editedSnapshot).toMatchObject({
+      stale: true,
+      inputs: {
+        sourceText: "edited source",
+        targetLanguage: { id: "en" },
+        serviceConfigurationId: "another-service",
+        additionalRequirements: "Use concise wording.",
+        taskTerms: [{ sourceTerm: "world", preferredTarget: "世界" }],
+      },
+      result: { status: "completed", translation: "你好" },
+    });
+    expect(transport.request).toHaveBeenCalledTimes(callsBeforeEdit);
+    expect(runtime.copyTranslation("task-send")).toEqual({ status: "copied" });
+    expect(runtime.pasteTranslation("task-send", "edited source")).toEqual({
+      status: "blocked",
+    });
+
+    runtime.clearCurrentTranslation();
+    expect(runtime.getCurrentTranslation()).toBeNull();
+    expect(runtime.copyTranslation("task-send")).toEqual({ status: "unavailable" });
+    expect(runtime.pasteTranslation("task-send", "edited source")).toEqual({
+      status: "unavailable",
+    });
   });
 
   it("keeps a translation and reports concrete protected-content risks", async () => {
@@ -617,6 +724,82 @@ describe("Ruyi runtime", () => {
       type: "started",
       taskId: "task-first",
     });
+  });
+
+  it("publishes in-memory progress and clear cancels without letting late results return", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    let pendingRequest:
+      | { signal: AbortSignal; onData(chunk: Buffer): void }
+      | undefined;
+    const copyText = vi.fn(() => true);
+    const transport = {
+      request: vi.fn((request) => {
+        pendingRequest = request;
+        return new Promise((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(Object.assign(new Error("cancelled"), { code: "cancelled" })),
+            { once: true },
+          );
+        });
+      }),
+    };
+    const runtime = createRuyiRuntime({
+      plainStorage,
+      cryptoStorage,
+      transport,
+      hostActions: { copyText },
+    });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+    const snapshots = vi.fn();
+    const unsubscribe = runtime.subscribeCurrentTranslation(snapshots);
+
+    const pending = runtime.startStandardTranslation({
+      taskId: "task-clear-current",
+      sourceText: "source",
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+      additionalRequirements: "temporary requirement",
+      taskTerms: [{ sourceTerm: "source", preferredTarget: "目标" }],
+    });
+    await vi.waitFor(() => expect(pendingRequest).toBeDefined());
+    pendingRequest?.onData(
+      Buffer.from('data: {"choices":[{"delta":{"content":"部分"}}]}\n\n'),
+    );
+
+    expect(runtime.getCurrentTranslation()).toMatchObject({
+      phase: "translating",
+      partialTranslation: "部分",
+      inputs: {
+        additionalRequirements: "temporary requirement",
+        taskTerms: [{ sourceTerm: "source", preferredTarget: "目标" }],
+      },
+    });
+    runtime.clearCurrentTranslation();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "cancelled" },
+    });
+    expect(pendingRequest?.signal.aborted).toBe(true);
+    expect(runtime.getCurrentTranslation()).toBeNull();
+    expect(runtime.copyTranslation("task-clear-current")).toEqual({
+      status: "unavailable",
+    });
+    expect(copyText).not.toHaveBeenCalled();
+    expect(snapshots).toHaveBeenLastCalledWith(null);
+    unsubscribe();
   });
 
   it("honours cancellation while service configuration is still being resolved", async () => {

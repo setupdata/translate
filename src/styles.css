@@ -22,7 +22,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -53,6 +54,7 @@ label {
 }
 
 textarea,
+[id="target-language"],
 [type="password"],
 [aria-label="译文"],
 [aria-label="部分译文"] {
@@ -75,8 +77,17 @@ textarea {
   min-height: 44px;
 }
 
+[id="target-language"] {
+  min-height: 44px;
+}
+
+[id="additional-requirements"] {
+  min-height: 96px;
+}
+
 textarea:focus-visible,
 input:focus-visible,
+select:focus-visible,
 button:focus-visible {
   outline: 3px solid rgb(106 70 145 / 30%);
   outline-offset: 2px;
@@ -105,6 +116,12 @@ button:disabled {
 .task-summary {
   margin: -8px 0 0;
   color: #6a6173;
+}
+
+.current-translation-note {
+  margin: -10px 0 0;
+  color: #6a6173;
+  font-size: 13px;
 }
 
 .configuration-card,
@@ -226,6 +243,7 @@ button:disabled {
   }
 
   textarea,
+  [id="target-language"],
   [type="password"],
   [aria-label="译文"],
   [aria-label="部分译文"] {
@@ -234,6 +252,7 @@ button:disabled {
   }
 
   .task-summary,
+  .current-translation-note,
   .confirmation-card dt {
     color: #bdb3c7;
   }

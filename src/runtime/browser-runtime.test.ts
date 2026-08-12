@@ -16,6 +16,10 @@ describe("getBrowserRuntime", () => {
       cancelTranslation: vi.fn(),
       copyTranslation: vi.fn(),
       pasteTranslation: vi.fn(),
+      getCurrentTranslation: vi.fn(),
+      updateCurrentTranslationInputs: vi.fn(),
+      subscribeCurrentTranslation: vi.fn(),
+      clearCurrentTranslation: vi.fn(),
     };
     window.ruyiTranslation = bridge;
 

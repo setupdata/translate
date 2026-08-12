@@ -11,6 +11,12 @@ function unavailableRuntime(): RuyiRuntimeBridge {
     cancelTranslation: () => undefined,
     copyTranslation: () => ({ status: "unavailable" as const }),
     pasteTranslation: () => ({ status: "unavailable" as const }),
+    getCurrentTranslation: () => null,
+    updateCurrentTranslationInputs: () => {
+      throw new Error("如意翻译运行时尚未就绪，请在 uTools 中打开插件。");
+    },
+    subscribeCurrentTranslation: () => () => undefined,
+    clearCurrentTranslation: () => undefined,
   });
 }
 

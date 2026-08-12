@@ -68,6 +68,7 @@ function sameConfirmationRequest(
   targetLanguage,
   configuration,
   normalizedUrl,
+  submittedInputs,
 ) {
   return (
     pending &&
@@ -75,7 +76,8 @@ function sameConfirmationRequest(
     pending.sourceText === request.sourceText &&
     JSON.stringify(pending.targetLanguage) === JSON.stringify(targetLanguage) &&
     pending.configurationId === configuration.id &&
-    pending.normalizedTranslationUrl === normalizedUrl
+    pending.normalizedTranslationUrl === normalizedUrl &&
+    pending.inputsFingerprint === inputsFingerprint(submittedInputs)
   );
 }
 
@@ -167,6 +169,61 @@ function mapTransportError(error) {
   return "unknown_error";
 }
 
+function freezeDeep(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value)) {
+    freezeDeep(child);
+  }
+  return Object.freeze(value);
+}
+
+function normalizeTaskTerms(taskTerms) {
+  if (!Array.isArray(taskTerms)) return [];
+  return taskTerms
+    .filter(
+      (term) =>
+        term &&
+        typeof term.sourceTerm === "string" &&
+        typeof term.preferredTarget === "string",
+    )
+    .map((term) => ({
+      sourceTerm: term.sourceTerm,
+      preferredTarget: term.preferredTarget,
+    }));
+}
+
+function normalizeCurrentInputs(inputs) {
+  const targetLanguage = normalizeTargetLanguage(inputs && inputs.targetLanguage);
+  return freezeDeep({
+    sourceText:
+      inputs && typeof inputs.sourceText === "string" ? inputs.sourceText : "",
+    targetLanguage: targetLanguage || { ...DEFAULTS.targetLanguage },
+    serviceConfigurationId:
+      inputs && typeof inputs.serviceConfigurationId === "string"
+        ? inputs.serviceConfigurationId
+        : null,
+    qualityMode: "standard",
+    additionalRequirements:
+      inputs && typeof inputs.additionalRequirements === "string"
+        ? inputs.additionalRequirements
+        : "",
+    taskTerms: normalizeTaskTerms(inputs && inputs.taskTerms),
+  });
+}
+
+function inputsFingerprint(inputs) {
+  return JSON.stringify([
+    inputs.sourceText,
+    inputs.targetLanguage,
+    inputs.serviceConfigurationId,
+    inputs.qualityMode,
+    inputs.additionalRequirements,
+    inputs.taskTerms,
+  ]);
+}
+
 function createRuyiRuntime({
   plainStorage,
   cryptoStorage,
@@ -178,8 +235,146 @@ function createRuyiRuntime({
   const pendingConfirmations = new Map();
   const preparingTaskIds = new Set();
   const cancelledPreparingTaskIds = new Set();
+  const currentTranslationListeners = new Set();
   let activeTask = null;
   let currentCopyCandidate = null;
+  let currentTranslation = null;
+  let currentTranslationRevision = 0;
+
+  function publishCurrentTranslation(next) {
+    currentTranslationRevision += 1;
+    if (next === null) {
+      currentTranslation = null;
+    } else {
+      const inputs = normalizeCurrentInputs(next.inputs);
+      const task = next.task ? freezeDeep({ ...next.task }) : null;
+      currentTranslation = freezeDeep({
+        revision: currentTranslationRevision,
+        phase: next.phase,
+        inputs,
+        task,
+        partialTranslation: next.partialTranslation || "",
+        result: next.result ? freezeDeep(next.result) : null,
+        stale: Boolean(
+          task &&
+            inputsFingerprint(inputs) !==
+              inputsFingerprint({
+                sourceText: task.sourceText,
+                targetLanguage: task.targetLanguage,
+                serviceConfigurationId: task.serviceConfigurationId,
+                qualityMode: task.qualityMode,
+                additionalRequirements: task.additionalRequirements,
+                taskTerms: task.taskTerms,
+              }),
+        ),
+      });
+    }
+    for (const listener of currentTranslationListeners) {
+      try {
+        listener(currentTranslation);
+      } catch {
+        // A renderer observer must not break task state.
+      }
+    }
+    return currentTranslation;
+  }
+
+  function updateCurrentTranslationInputs(inputs) {
+    const normalizedInputs = normalizeCurrentInputs(inputs);
+    return publishCurrentTranslation(
+      currentTranslation
+        ? { ...currentTranslation, inputs: normalizedInputs }
+        : {
+            phase: "editing",
+            inputs: normalizedInputs,
+            task: null,
+            partialTranslation: "",
+            result: null,
+          },
+    );
+  }
+
+  function getCurrentTranslation() {
+    return currentTranslation;
+  }
+
+  function subscribeCurrentTranslation(listener) {
+    if (typeof listener !== "function") return () => undefined;
+    currentTranslationListeners.add(listener);
+    return () => currentTranslationListeners.delete(listener);
+  }
+
+  function cancelAllCurrentWork() {
+    pendingConfirmations.clear();
+    for (const taskId of preparingTaskIds) {
+      cancelledPreparingTaskIds.add(taskId);
+    }
+    if (activeTask) {
+      activeTask.controller.abort();
+    }
+  }
+
+  function beginCurrentTask(request, targetLanguage) {
+    const settings = readSettings();
+    const inputs = normalizeCurrentInputs({
+      sourceText: request.sourceText,
+      targetLanguage,
+      serviceConfigurationId:
+        typeof request.serviceConfigurationId === "string"
+          ? request.serviceConfigurationId
+          : settings.currentServiceConfigurationId,
+      qualityMode: "standard",
+      additionalRequirements:
+        typeof request.additionalRequirements === "string"
+          ? request.additionalRequirements
+          : settings.defaults &&
+              typeof settings.defaults.additionalRequirements === "string"
+            ? settings.defaults.additionalRequirements
+            : "",
+      taskTerms: request.taskTerms,
+    });
+    const continuation =
+      Boolean(request.confirmationToken) &&
+      currentTranslation &&
+      currentTranslation.task &&
+      currentTranslation.task.taskId === request.taskId;
+    if (!continuation) {
+      cancelAllCurrentWork();
+      currentCopyCandidate = null;
+    }
+    const task = continuation
+      ? currentTranslation.task
+      : freezeDeep({ taskId: request.taskId, ...inputs });
+    publishCurrentTranslation({
+      phase: "preparing",
+      inputs,
+      task,
+      partialTranslation: continuation
+        ? currentTranslation.partialTranslation
+        : "",
+      result: null,
+    });
+    return { inputs, task, continuation };
+  }
+
+  function updateCurrentTask(taskId, patch) {
+    if (
+      !currentTranslation ||
+      !currentTranslation.task ||
+      currentTranslation.task.taskId !== taskId
+    ) {
+      return currentTranslation;
+    }
+    return publishCurrentTranslation({ ...currentTranslation, ...patch });
+  }
+
+  function storeCurrentResult(taskId, result, phase, partialTranslation = "") {
+    return updateCurrentTask(taskId, {
+      phase,
+      result: freezeDeep(result),
+      partialTranslation,
+    });
+  }
 
   function readSettings() {
     const existing = plainStorage.getItem(SETTINGS_KEY);
@@ -305,6 +500,8 @@ function createRuyiRuntime({
       };
     }
 
+    const { inputs: submittedInputs } = beginCurrentTask(request, targetLanguage);
+
     preparingTaskIds.add(request.taskId);
     let state;
     try {
@@ -314,30 +511,36 @@ function createRuyiRuntime({
     }
 
     if (cancelledPreparingTaskIds.delete(request.taskId)) {
-      return {
+      const result = {
         status: "failed",
         taskId: request.taskId,
         sourceRetained: true,
         error: { code: "cancelled", message: errorMessage("cancelled") },
       };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
     }
 
     if (!state.serviceConfiguration) {
-      return {
+      const result = {
         status: "configuration_required",
         reason: "missing_configuration",
         sourceRetained: true,
         serviceConfiguration: null,
       };
+      storeCurrentResult(request.taskId, result, "needs_configuration");
+      return result;
     }
 
     if (!state.serviceConfiguration.hasApiKey) {
-      return {
+      const result = {
         status: "configuration_required",
         reason: "missing_api_key",
         sourceRetained: true,
         serviceConfiguration: state.serviceConfiguration,
       };
+      storeCurrentResult(request.taskId, result, "needs_configuration");
+      return result;
     }
 
     const settings = readSettings();
@@ -365,7 +568,7 @@ function createRuyiRuntime({
       }
       normalizedTranslationUrl = parsedTranslationUrl.toString();
     } catch {
-      return {
+      const result = {
         status: "failed",
         taskId: request.taskId,
         sourceRetained: true,
@@ -374,6 +577,8 @@ function createRuyiRuntime({
           message: errorMessage("configuration_error"),
         },
       };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
     }
 
     if (configuration.confirmedTranslationUrl !== normalizedTranslationUrl) {
@@ -390,13 +595,16 @@ function createRuyiRuntime({
             targetLanguage,
             configuration,
             normalizedTranslationUrl,
+            submittedInputs,
           )
         ) {
-          return {
+          const result = {
             status: "validation_error",
             reason: "invalid_confirmation",
             sourceRetained: true,
           };
+          storeCurrentResult(request.taskId, result, "failed");
+          return result;
         }
 
         configuration.confirmedTranslationUrl = normalizedTranslationUrl;
@@ -409,9 +617,10 @@ function createRuyiRuntime({
           targetLanguage,
           configurationId: configuration.id,
           normalizedTranslationUrl,
+          inputsFingerprint: inputsFingerprint(submittedInputs),
         });
 
-        return {
+        const result = {
           status: "confirmation_required",
           sourceRetained: true,
           confirmationToken,
@@ -433,6 +642,12 @@ function createRuyiRuntime({
             callCount: 1,
           },
         };
+        storeCurrentResult(
+          request.taskId,
+          result,
+          "awaiting_confirmation",
+        );
+        return result;
       }
     }
 
@@ -444,7 +659,7 @@ function createRuyiRuntime({
       domainProfile: null,
       matchedTerms: [],
       referenceTranslations: [],
-      additionalRequirements: settings.defaults.additionalRequirements,
+      additionalRequirements: submittedInputs.additionalRequirements,
       protectedItems: extractProtectedItems(request.sourceText),
       qualityMode: "standard",
       mode: "full_document",
@@ -475,13 +690,21 @@ function createRuyiRuntime({
             return;
           }
           emitProgress({ type: "text_delta", taskId: request.taskId, delta });
+          const currentPartial =
+            currentTranslation && currentTranslation.task.taskId === request.taskId
+              ? currentTranslation.partialTranslation
+              : "";
+          updateCurrentTask(request.taskId, {
+            phase: "translating",
+            partialTranslation: currentPartial + delta,
+          });
         },
       });
     } catch {
       if (activeTask === task) {
         activeTask = null;
       }
-      return {
+      const result = {
         status: "failed",
         taskId: request.taskId,
         sourceRetained: true,
@@ -490,8 +713,11 @@ function createRuyiRuntime({
           message: errorMessage("configuration_error"),
         },
       };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
     }
     emitProgress({ type: "started", taskId: request.taskId });
+    updateCurrentTask(request.taskId, { phase: "translating" });
 
     try {
       let sawData = false;
@@ -525,7 +751,7 @@ function createRuyiRuntime({
           taskId: request.taskId,
           status: "failed",
         });
-        return {
+        const result = {
           status: "failed",
           taskId: request.taskId,
           sourceRetained: true,
@@ -536,6 +762,8 @@ function createRuyiRuntime({
             ...(typeof requestId === "string" ? { requestId } : {}),
           },
         };
+        storeCurrentResult(request.taskId, result, "failed");
+        return result;
       }
 
       const translation = protocolOperation.finish(response.body, sawData);
@@ -555,12 +783,19 @@ function createRuyiRuntime({
         taskId: request.taskId,
         status: "completed",
       });
-      return {
+      const result = freezeDeep({
         status: "completed",
         taskId: request.taskId,
         translation,
         quality,
-      };
+      });
+      storeCurrentResult(
+        request.taskId,
+        result,
+        "completed",
+        translation,
+      );
+      return result;
     } catch (error) {
       const code =
         activeTask !== task || controller.signal.aborted
@@ -578,7 +813,13 @@ function createRuyiRuntime({
               streamCompleted: false,
             })
           : null;
-      if (quality && partialTranslation) {
+      if (
+        quality &&
+        partialTranslation &&
+        currentTranslation &&
+        currentTranslation.task &&
+        currentTranslation.task.taskId === request.taskId
+      ) {
         currentCopyCandidate = {
           taskId: request.taskId,
           sourceText: request.sourceText,
@@ -591,7 +832,7 @@ function createRuyiRuntime({
         taskId: request.taskId,
         status: code === "cancelled" ? "cancelled" : "failed",
       });
-      return {
+      const result = freezeDeep({
         status: "failed",
         taskId: request.taskId,
         sourceRetained: true,
@@ -601,7 +842,14 @@ function createRuyiRuntime({
           code,
           message: errorMessage(code),
         },
-      };
+      });
+      storeCurrentResult(
+        request.taskId,
+        result,
+        "failed",
+        partialTranslation || "",
+      );
+      return result;
     } finally {
       if (activeTask === task) {
         activeTask = null;
@@ -610,9 +858,11 @@ function createRuyiRuntime({
   }
 
   function cancelTranslation(taskId) {
+    let cancelledPendingConfirmation = false;
     for (const [token, pending] of pendingConfirmations) {
       if (pending.taskId === taskId) {
         pendingConfirmations.delete(token);
+        cancelledPendingConfirmation = true;
       }
     }
     if (preparingTaskIds.has(taskId)) {
@@ -620,11 +870,36 @@ function createRuyiRuntime({
     }
     if (activeTask && activeTask.taskId === taskId) {
       activeTask.controller.abort();
+    } else if (
+      cancelledPendingConfirmation &&
+      currentTranslation &&
+      currentTranslation.task &&
+      currentTranslation.task.taskId === taskId
+    ) {
+      publishCurrentTranslation({
+        phase: "editing",
+        inputs: currentTranslation.inputs,
+        task: null,
+        partialTranslation: "",
+        result: null,
+      });
     }
   }
 
+  function clearCurrentTranslation() {
+    cancelAllCurrentWork();
+    currentCopyCandidate = null;
+    publishCurrentTranslation(null);
+  }
+
   function copyTranslation(taskId, confirmRisks = false) {
-    if (!currentCopyCandidate || currentCopyCandidate.taskId !== taskId) {
+    if (
+      !currentCopyCandidate ||
+      currentCopyCandidate.taskId !== taskId ||
+      !currentTranslation ||
+      !currentTranslation.task ||
+      currentTranslation.task.taskId !== taskId
+    ) {
       return { status: "unavailable" };
     }
     if (currentCopyCandidate.pasteBlocked && !confirmRisks) {
@@ -648,7 +923,11 @@ function createRuyiRuntime({
     }
     if (
       currentCopyCandidate.pasteBlocked ||
-      currentCopyCandidate.sourceText !== currentSourceText
+      currentCopyCandidate.sourceText !== currentSourceText ||
+      !currentTranslation ||
+      currentTranslation.stale ||
+      !currentTranslation.task ||
+      currentTranslation.task.taskId !== taskId
     ) {
       return { status: "blocked" };
     }
@@ -671,6 +950,10 @@ function createRuyiRuntime({
     cancelTranslation,
     copyTranslation,
     pasteTranslation,
+    getCurrentTranslation,
+    updateCurrentTranslationInputs,
+    subscribeCurrentTranslation,
+    clearCurrentTranslation,
   });
 }
 

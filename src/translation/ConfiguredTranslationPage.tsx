@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
+  CurrentTranslationInputs,
+  CurrentTranslationSnapshot,
   RuntimeConfigurationState,
   RuyiRuntimeBridge,
   StandardTranslationResult,
+  TaskTerm,
+  TargetLanguage,
 } from "../runtime/contracts";
 
 type ConfiguredTranslationPageProps = {
@@ -12,8 +16,46 @@ type ConfiguredTranslationPageProps = {
   runtime: RuyiRuntimeBridge;
 };
 
+type StartTranslationOptions = {
+  confirmationToken?: string;
+  beginNewTask?: boolean;
+  targetLanguage: TargetLanguage;
+  additionalRequirements: string;
+  taskTerms: TaskTerm[];
+};
+
 function createTaskId(): string {
   return `translation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+const TARGET_LANGUAGES: Array<TargetLanguage & { displayName: string }> = [
+  { kind: "preset", id: "zh-CN", displayName: "简体中文", modelLabel: "Simplified Chinese" },
+  { kind: "preset", id: "zh-TW", displayName: "繁体中文", modelLabel: "Traditional Chinese" },
+  { kind: "preset", id: "en", displayName: "英语", modelLabel: "English" },
+  { kind: "preset", id: "ja", displayName: "日语", modelLabel: "Japanese" },
+  { kind: "preset", id: "ko", displayName: "韩语", modelLabel: "Korean" },
+  { kind: "preset", id: "fr", displayName: "法语", modelLabel: "French" },
+  { kind: "preset", id: "de", displayName: "德语", modelLabel: "German" },
+  { kind: "preset", id: "es", displayName: "西班牙语", modelLabel: "Spanish" },
+];
+
+const INITIAL_TARGET_LANGUAGE = TARGET_LANGUAGES[0];
+
+function buildCurrentInputs(
+  sourceText: string,
+  targetLanguage: TargetLanguage,
+  serviceConfigurationId: string | null,
+  additionalRequirements: string,
+  taskTerms: TaskTerm[],
+): CurrentTranslationInputs {
+  return {
+    sourceText,
+    targetLanguage,
+    serviceConfigurationId,
+    qualityMode: "standard",
+    additionalRequirements,
+    taskTerms,
+  };
 }
 
 export function ConfiguredTranslationPage({
@@ -22,22 +64,81 @@ export function ConfiguredTranslationPage({
   runtime,
 }: ConfiguredTranslationPageProps): React.JSX.Element {
   const [sourceText, setSourceText] = useState(initialText);
+  const [targetLanguage, setTargetLanguage] = useState<TargetLanguage>(
+    INITIAL_TARGET_LANGUAGE,
+  );
+  const [additionalRequirements, setAdditionalRequirements] = useState("");
+  const [taskTerms, setTaskTerms] = useState<TaskTerm[]>([]);
   const [configuration, setConfiguration] =
     useState<RuntimeConfigurationState | null>(null);
   const [result, setResult] = useState<StandardTranslationResult | null>(null);
-  const [resultSourceText, setResultSourceText] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [partialTranslation, setPartialTranslation] = useState("");
   const [isTranslating, setIsTranslating] = useState(false);
   const [confirmRiskCopy, setConfirmRiskCopy] = useState(false);
   const [hostActionMessage, setHostActionMessage] = useState("");
+  const [snapshotStale, setSnapshotStale] = useState(false);
   const taskId = useRef(createTaskId());
   const requestGeneration = useRef(0);
+  const deferredActionGeneration = useRef(0);
   const hasAutoStarted = useRef(false);
   const mounted = useRef(true);
   const riskCopyTrigger = useRef<HTMLButtonElement | null>(null);
   const riskCopyCancel = useRef<HTMLButtonElement | null>(null);
   const restoreRiskCopyFocus = useRef(false);
+
+  const applyCurrentSnapshot = useCallback(
+    (snapshot: CurrentTranslationSnapshot | null) => {
+      if (!snapshot) {
+        setSourceText("");
+        setTargetLanguage(INITIAL_TARGET_LANGUAGE);
+        setAdditionalRequirements("");
+        setTaskTerms([]);
+        setResult(null);
+        setPartialTranslation("");
+        setIsTranslating(false);
+        setConfirmRiskCopy(false);
+        setHostActionMessage("");
+        setSnapshotStale(false);
+        return;
+      }
+      setSourceText(snapshot.inputs.sourceText);
+      setTargetLanguage(snapshot.inputs.targetLanguage);
+      setAdditionalRequirements(snapshot.inputs.additionalRequirements);
+      setTaskTerms(snapshot.inputs.taskTerms);
+      setResult(snapshot.result);
+      setPartialTranslation(snapshot.partialTranslation);
+      setIsTranslating(snapshot.phase === "translating");
+      setSnapshotStale(snapshot.stale);
+      if (snapshot.task) {
+        taskId.current = snapshot.task.taskId;
+      }
+    },
+    [],
+  );
+
+  const currentInputs = useCallback(
+    (
+      source = sourceText,
+      language = targetLanguage,
+      requirements = additionalRequirements,
+    ): CurrentTranslationInputs =>
+      buildCurrentInputs(
+        source,
+        language,
+        configuration?.serviceConfiguration?.id ?? null,
+        requirements,
+        taskTerms,
+      ),
+    [additionalRequirements, configuration, sourceText, targetLanguage, taskTerms],
+  );
+
+  const publishInputs = useCallback(
+    (inputs: CurrentTranslationInputs) => {
+      setSnapshotStale(runtime.updateCurrentTranslationInputs(inputs).stale);
+    },
+    [runtime],
+  );
 
   const closeRiskCopy = useCallback(() => {
     restoreRiskCopyFocus.current = true;
@@ -52,38 +153,63 @@ export function ConfiguredTranslationPage({
     };
   }, []);
 
+  useEffect(() => {
+    const existing = runtime.getCurrentTranslation();
+    if (existing) {
+      applyCurrentSnapshot(existing);
+    }
+    return runtime.subscribeCurrentTranslation(applyCurrentSnapshot);
+  }, [applyCurrentSnapshot, runtime]);
+
   const startTranslation = useCallback(
     async (
       state: RuntimeConfigurationState,
       text: string,
-      confirmationToken?: string,
-      beginNewTask = false,
+      options: StartTranslationOptions,
     ) => {
       if (!mounted.current) {
         return;
       }
       setErrorMessage("");
-      setConfirmRiskCopy(false);
-      setHostActionMessage("");
-      if (beginNewTask) {
-        runtime.cancelTranslation(taskId.current);
-        taskId.current = createTaskId();
+      if (text.trim().length === 0) {
+        setErrorMessage("请输入需要翻译的有效文本。");
+        return;
       }
-      const generation = ++requestGeneration.current;
-      setResult(null);
-      setResultSourceText(null);
-      setPartialTranslation("");
-      setIsTranslating(false);
       if (Array.from(text.replace(/\r\n/gu, "\n")).length > 10_000) {
         setErrorMessage("源文本不能超过 10,000 个 Unicode 码点。");
         return;
       }
+      setConfirmRiskCopy(false);
+      setHostActionMessage("");
+      if (options.beginNewTask) {
+        runtime.cancelTranslation(taskId.current);
+        taskId.current = createTaskId();
+        setSourceText(text);
+        setTargetLanguage(options.targetLanguage);
+        setAdditionalRequirements(options.additionalRequirements);
+        setTaskTerms(options.taskTerms);
+      }
+      const generation = ++requestGeneration.current;
+      setResult(null);
+      setPartialTranslation("");
+      setIsTranslating(false);
+      setSnapshotStale(false);
+      const submittedInputs = buildCurrentInputs(
+        text,
+        options.targetLanguage,
+        state.serviceConfiguration?.id ?? null,
+        options.additionalRequirements,
+        options.taskTerms,
+      );
       try {
         const nextResult = await runtime.startStandardTranslation({
           taskId: taskId.current,
           sourceText: text,
-          targetLanguage: state.defaults.targetLanguage,
-          confirmationToken,
+          targetLanguage: options.targetLanguage,
+          serviceConfigurationId: state.serviceConfiguration?.id ?? null,
+          additionalRequirements: options.additionalRequirements,
+          taskTerms: submittedInputs.taskTerms,
+          confirmationToken: options.confirmationToken,
         }, (event) => {
           if (!mounted.current || generation !== requestGeneration.current) {
             return;
@@ -105,12 +231,6 @@ export function ConfiguredTranslationPage({
             setPartialTranslation(nextResult.partialTranslation);
           }
           setResult(nextResult);
-          if (
-            nextResult.status === "completed" ||
-            (nextResult.status === "failed" && nextResult.partialTranslation)
-          ) {
-            setResultSourceText(text);
-          }
         }
       } catch {
         if (mounted.current && generation === requestGeneration.current) {
@@ -124,6 +244,33 @@ export function ConfiguredTranslationPage({
 
   useEffect(() => {
     let active = true;
+    const deferredGeneration = deferredActionGeneration.current;
+    const shouldAutoStart = autoStart && !hasAutoStarted.current;
+    const previousInputs = runtime.getCurrentTranslation()?.inputs ?? null;
+    if (shouldAutoStart) {
+      hasAutoStarted.current = true;
+      runtime.clearCurrentTranslation();
+      requestGeneration.current += 1;
+      taskId.current = createTaskId();
+      const replacementInputs = buildCurrentInputs(
+        initialText,
+        previousInputs?.targetLanguage ?? INITIAL_TARGET_LANGUAGE,
+        previousInputs?.serviceConfigurationId ?? null,
+        previousInputs?.additionalRequirements ?? "",
+        previousInputs?.taskTerms ?? [],
+      );
+      runtime.updateCurrentTranslationInputs(replacementInputs);
+      setSourceText(replacementInputs.sourceText);
+      setTargetLanguage(replacementInputs.targetLanguage);
+      setAdditionalRequirements(replacementInputs.additionalRequirements);
+      setTaskTerms(replacementInputs.taskTerms);
+      setResult(null);
+      setPartialTranslation("");
+      setIsTranslating(false);
+      setConfirmRiskCopy(false);
+      setHostActionMessage("");
+      setSnapshotStale(false);
+    }
     void runtime
       .getServiceConfiguration()
       .then(async (state) => {
@@ -131,13 +278,46 @@ export function ConfiguredTranslationPage({
           return;
         }
         setConfiguration(state);
-        if (autoStart && !hasAutoStarted.current) {
-          hasAutoStarted.current = true;
-          await startTranslation(state, initialText);
+        if (deferredGeneration !== deferredActionGeneration.current) {
+          return;
+        }
+        if (shouldAutoStart) {
+          const autoTargetLanguage =
+            previousInputs?.targetLanguage ?? state.defaults.targetLanguage;
+          const autoRequirements =
+            previousInputs?.additionalRequirements ??
+            state.defaults.additionalRequirements;
+          const autoTaskTerms = previousInputs?.taskTerms ?? [];
+          setTargetLanguage(autoTargetLanguage);
+          setAdditionalRequirements(autoRequirements);
+          setTaskTerms(autoTaskTerms);
+          await startTranslation(
+            state,
+            initialText,
+            {
+              targetLanguage: autoTargetLanguage,
+              additionalRequirements: autoRequirements,
+              taskTerms: autoTaskTerms,
+            },
+          );
+        } else if (!runtime.getCurrentTranslation()) {
+          setTargetLanguage(state.defaults.targetLanguage);
+          setAdditionalRequirements(state.defaults.additionalRequirements);
+          runtime.updateCurrentTranslationInputs({
+            sourceText: initialText,
+            targetLanguage: state.defaults.targetLanguage,
+            serviceConfigurationId: state.serviceConfiguration?.id ?? null,
+            qualityMode: "standard",
+            additionalRequirements: state.defaults.additionalRequirements,
+            taskTerms: [],
+          });
         }
       })
       .catch(() => {
-        if (active) {
+        if (
+          active &&
+          deferredGeneration === deferredActionGeneration.current
+        ) {
           setErrorMessage("无法读取服务配置。");
         }
       });
@@ -156,8 +336,7 @@ export function ConfiguredTranslationPage({
     result?.status === "completed" || result?.status === "failed"
       ? result.quality
       : undefined;
-  const resultIsStale =
-    resultSourceText !== null && sourceText !== resultSourceText;
+  const resultIsStale = snapshotStale;
 
   useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
@@ -194,7 +373,7 @@ export function ConfiguredTranslationPage({
     <main>
       <h1>如意翻译</h1>
       <p className="task-summary">
-        目标语言：{configuration?.defaults.targetLanguage.displayName ?? "读取中…"}
+        目标语言：{targetLanguage.displayName ?? targetLanguage.modelLabel}
         <span aria-hidden="true"> · </span>
         质量模式：标准模式
       </p>
@@ -208,7 +387,12 @@ export function ConfiguredTranslationPage({
         onSubmit={(event) => {
           event.preventDefault();
           if (configuration) {
-            void startTranslation(configuration, sourceText, undefined, true);
+            void startTranslation(configuration, sourceText, {
+              beginNewTask: true,
+              targetLanguage,
+              additionalRequirements,
+              taskTerms,
+            });
           }
         }}
       >
@@ -216,7 +400,12 @@ export function ConfiguredTranslationPage({
         <textarea
           id="source-text"
           value={sourceText}
-          onChange={(event) => setSourceText(event.target.value)}
+          onChange={(event) => {
+            const nextSourceText = event.target.value;
+            deferredActionGeneration.current += 1;
+            setSourceText(nextSourceText);
+            publishInputs(currentInputs(nextSourceText));
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
@@ -224,17 +413,76 @@ export function ConfiguredTranslationPage({
                 void startTranslation(
                   configuration,
                   sourceText,
-                  undefined,
-                  true,
+                  {
+                    beginNewTask: true,
+                    targetLanguage,
+                    additionalRequirements,
+                    taskTerms,
+                  },
                 );
               }
             }
           }}
         />
+        <label htmlFor="target-language">目标语言</label>
+        <select
+          id="target-language"
+          value={targetLanguage.id}
+          onChange={(event) => {
+            const nextTargetLanguage =
+              TARGET_LANGUAGES.find(
+                (candidate) => candidate.id === event.target.value,
+              ) ?? INITIAL_TARGET_LANGUAGE;
+            deferredActionGeneration.current += 1;
+            setTargetLanguage(nextTargetLanguage);
+            publishInputs(currentInputs(sourceText, nextTargetLanguage));
+          }}
+        >
+          {TARGET_LANGUAGES.map((language) => (
+            <option key={language.id} value={language.id}>
+              {language.displayName}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="additional-requirements">附加翻译要求</label>
+        <textarea
+          id="additional-requirements"
+          value={additionalRequirements}
+          onChange={(event) => {
+            const nextRequirements = event.target.value;
+            deferredActionGeneration.current += 1;
+            setAdditionalRequirements(nextRequirements);
+            publishInputs(
+              currentInputs(sourceText, targetLanguage, nextRequirements),
+            );
+          }}
+        />
         <button type="submit" disabled={!configuration}>
           开始翻译
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            requestGeneration.current += 1;
+            deferredActionGeneration.current += 1;
+            runtime.clearCurrentTranslation();
+            taskId.current = createTaskId();
+            applyCurrentSnapshot(null);
+            setTargetLanguage(
+              configuration?.defaults.targetLanguage ?? INITIAL_TARGET_LANGUAGE,
+            );
+            setAdditionalRequirements(
+              configuration?.defaults.additionalRequirements ?? "",
+            );
+            setErrorMessage("");
+          }}
+        >
+          清空当前内容
+        </button>
       </form>
+      <p className="current-translation-note">
+        当前内容只保留在本次插件进程内；清空后无法恢复。
+      </p>
 
       {isTranslating ? (
         <section className="translation-progress">
@@ -276,14 +524,32 @@ export function ConfiguredTranslationPage({
             onSubmit={(event) => {
               event.preventDefault();
               const form = event.currentTarget;
+              const deferredGeneration = deferredActionGeneration.current;
               void runtime
                 .saveApiKey(form)
                 .then(async (savedState) => {
                   form.reset();
                   setConfiguration(savedState);
-                  await startTranslation(savedState, sourceText);
+                  if (
+                    !mounted.current ||
+                    deferredGeneration !== deferredActionGeneration.current
+                  ) {
+                    return;
+                  }
+                  await startTranslation(savedState, sourceText, {
+                    targetLanguage,
+                    additionalRequirements,
+                    taskTerms,
+                  });
                 })
-                .catch(() => setErrorMessage("API Key 保存失败。"));
+                .catch(() => {
+                  if (
+                    mounted.current &&
+                    deferredGeneration === deferredActionGeneration.current
+                  ) {
+                    setErrorMessage("API Key 保存失败。");
+                  }
+                });
             }}
           >
             <label htmlFor="api-key">API Key</label>
@@ -338,7 +604,12 @@ export function ConfiguredTranslationPage({
                   void startTranslation(
                     configuration,
                     sourceText,
-                    confirmation.confirmationToken,
+                    {
+                      confirmationToken: confirmation.confirmationToken,
+                      targetLanguage,
+                      additionalRequirements,
+                      taskTerms,
+                    },
                   );
                 }
               }}
@@ -394,7 +665,7 @@ export function ConfiguredTranslationPage({
           {result.quality.pasteBlocked || resultIsStale ? (
             <p id="paste-blocked-reason" className="quality-blocked-note">
               {resultIsStale
-                ? "源文本已修改，当前译文对应修改前的内容；重新翻译前不能粘贴。"
+                ? "源文本或任务设置已修改，当前译文对应修改前的任务设置；重新翻译前不能粘贴。"
                 : "译文含确定性严重风险，已禁止直接粘贴；确认风险后仍可复制。"}
             </p>
           ) : null}
@@ -430,6 +701,11 @@ export function ConfiguredTranslationPage({
                 粘贴回原窗口
               </button>
             </div>
+          ) : null}
+          {resultIsStale ? (
+            <p className="quality-blocked-note">
+              源文本或任务设置已修改，当前部分译文对应修改前的任务设置。
+            </p>
           ) : null}
         </>
       ) : null}

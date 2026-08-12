@@ -32,7 +32,15 @@ export type StandardTranslationRequest = {
   taskId: string;
   sourceText: string;
   targetLanguage: TargetLanguage;
+  serviceConfigurationId?: string | null;
+  additionalRequirements?: string;
+  taskTerms?: TaskTerm[];
   confirmationToken?: string;
+};
+
+export type TaskTerm = {
+  sourceTerm: string;
+  preferredTarget: string;
 };
 
 export type StableTranslationErrorCode =
@@ -134,6 +142,32 @@ export type StandardTranslationResult =
       };
     };
 
+export type CurrentTranslationInputs = {
+  sourceText: string;
+  targetLanguage: TargetLanguage;
+  serviceConfigurationId: string | null;
+  qualityMode: "standard";
+  additionalRequirements: string;
+  taskTerms: TaskTerm[];
+};
+
+export type CurrentTranslationSnapshot = {
+  revision: number;
+  phase:
+    | "editing"
+    | "preparing"
+    | "needs_configuration"
+    | "awaiting_confirmation"
+    | "translating"
+    | "completed"
+    | "failed";
+  inputs: CurrentTranslationInputs;
+  task: (CurrentTranslationInputs & { taskId: string }) | null;
+  partialTranslation: string;
+  result: StandardTranslationResult | null;
+  stale: boolean;
+};
+
 export interface RuyiRuntimeBridge {
   getServiceConfiguration(): Promise<RuntimeConfigurationState>;
   saveApiKey(credentialForm: HTMLFormElement): Promise<RuntimeConfigurationState>;
@@ -144,4 +178,12 @@ export interface RuyiRuntimeBridge {
   cancelTranslation(taskId: string): void;
   copyTranslation(taskId: string, confirmRisks?: boolean): TranslationHostActionResult;
   pasteTranslation(taskId: string, currentSourceText: string): TranslationHostActionResult;
+  getCurrentTranslation(): CurrentTranslationSnapshot | null;
+  updateCurrentTranslationInputs(
+    inputs: CurrentTranslationInputs,
+  ): CurrentTranslationSnapshot;
+  subscribeCurrentTranslation(
+    listener: (snapshot: CurrentTranslationSnapshot | null) => void,
+  ): () => void;
+  clearCurrentTranslation(): void;
 }

@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  CurrentTranslationInputs,
+  CurrentTranslationSnapshot,
   RuntimeConfigurationState,
   RuyiRuntimeBridge,
   ServiceConfigurationView,
@@ -25,6 +27,30 @@ const missingKeyService: ServiceConfigurationView = {
   maskedApiKey: null,
 };
 
+function currentTranslationMethods(staleOnUpdate = false): Pick<
+  RuyiRuntimeBridge,
+  | "getCurrentTranslation"
+  | "updateCurrentTranslationInputs"
+  | "subscribeCurrentTranslation"
+  | "clearCurrentTranslation"
+> {
+  return {
+    getCurrentTranslation: () => null,
+    updateCurrentTranslationInputs: (inputs: CurrentTranslationInputs) =>
+      ({
+        revision: 1,
+        phase: "editing",
+        inputs,
+        task: null,
+        partialTranslation: "",
+        result: null,
+        stale: staleOnUpdate,
+      }) satisfies CurrentTranslationSnapshot,
+    subscribeCurrentTranslation: () => () => undefined,
+    clearCurrentTranslation: vi.fn(),
+  };
+}
+
 const missingKeyState: RuntimeConfigurationState = {
   serviceConfiguration: missingKeyService,
   defaults: {
@@ -43,6 +69,7 @@ describe("ConfiguredTranslationPage", () => {
   it("keeps matched text and asks for the missing API key without sending", async () => {
     const sourceText = "  first line\n    second line  ";
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(missingKeyState),
       saveApiKey: vi.fn(),
       startStandardTranslation: vi.fn().mockResolvedValue({
@@ -88,6 +115,7 @@ describe("ConfiguredTranslationPage", () => {
       serviceConfiguration: null,
     };
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(noConfigurationState),
       saveApiKey: vi.fn(),
       startStandardTranslation: vi.fn().mockResolvedValue({
@@ -130,6 +158,7 @@ describe("ConfiguredTranslationPage", () => {
       },
     };
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(missingKeyState),
       saveApiKey: vi.fn().mockResolvedValue(savedState),
       startStandardTranslation: vi
@@ -203,6 +232,7 @@ describe("ConfiguredTranslationPage", () => {
       },
     };
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
       saveApiKey: vi.fn(),
       startStandardTranslation: vi.fn().mockResolvedValue({
@@ -254,6 +284,7 @@ describe("ConfiguredTranslationPage", () => {
       },
     };
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
       saveApiKey: vi.fn(),
       startStandardTranslation: vi
@@ -425,7 +456,7 @@ describe("ConfiguredTranslationPage", () => {
 
   it("keeps an old translation visible but disables paste after the source changes", async () => {
     const user = userEvent.setup();
-    const runtime = createRuntimeForBoundary();
+    const runtime = createRuntimeForBoundary(true);
     runtime.startStandardTranslation = vi.fn().mockResolvedValue({
       status: "completed",
       taskId: "task-stale",
@@ -451,7 +482,442 @@ describe("ConfiguredTranslationPage", () => {
 
     expect(screen.getByRole("region", { name: "译文" })).toHaveTextContent("旧译文");
     expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
-    expect(screen.getByText(/源文本已修改/u)).toBeInTheDocument();
+    expect(screen.getByText(/源文本或任务设置已修改/u)).toBeInTheDocument();
+  });
+
+  it("keeps an old translation stale when target language or task requirements change", async () => {
+    const user = userEvent.setup();
+    const runtime = createRuntimeForBoundary(true);
+    const updateCurrentTranslationInputs = vi.fn(
+      runtime.updateCurrentTranslationInputs,
+    );
+    runtime.updateCurrentTranslationInputs = updateCurrentTranslationInputs;
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-settings-stale",
+      translation: "旧译文",
+      quality: { risks: [], pasteBlocked: false },
+    });
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="old source"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+    expect(await screen.findByRole("region", { name: "译文" })).toHaveTextContent(
+      "旧译文",
+    );
+    vi.mocked(runtime.startStandardTranslation).mockClear();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "目标语言" }),
+      "en",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "附加翻译要求" }),
+      "Use concise wording.",
+    );
+
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "译文" })).toHaveTextContent("旧译文");
+    expect(screen.getByRole("button", { name: "复制译文" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
+    expect(screen.getByText(/对应修改前的任务设置/u)).toBeInTheDocument();
+    expect(updateCurrentTranslationInputs).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourceText: "old source",
+        targetLanguage: expect.objectContaining({ id: "en" }),
+        additionalRequirements: "Use concise wording.",
+      }),
+    );
+  });
+
+  it("keeps the stale result when edited source text cannot start a new request", async () => {
+    const user = userEvent.setup();
+    const runtime = createRuntimeForBoundary(true);
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-invalid-edit",
+      translation: "旧译文",
+      quality: { risks: [], pasteBlocked: false },
+    });
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="old source"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+    expect(await screen.findByRole("region", { name: "译文" })).toHaveTextContent(
+      "旧译文",
+    );
+
+    const source = screen.getByRole("textbox", { name: "源文本" });
+    await user.clear(source);
+    await user.type(source, "   ");
+    await user.click(screen.getByRole("button", { name: "开始翻译" }));
+
+    expect(runtime.startStandardTranslation).toHaveBeenCalledOnce();
+    expect(screen.getByRole("region", { name: "译文" })).toHaveTextContent("旧译文");
+    expect(screen.getByRole("button", { name: "复制译文" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("有效文本");
+  });
+
+  it("clears the current source, result, temporary requirements, and quality risks", async () => {
+    const user = userEvent.setup();
+    const runtime = createRuntimeForBoundary();
+    runtime.getServiceConfiguration = vi.fn().mockResolvedValue({
+      ...missingKeyState,
+      serviceConfiguration: {
+        ...missingKeyService,
+        hasApiKey: true,
+        maskedApiKey: "••••••••1234",
+      },
+      defaults: {
+        ...missingKeyState.defaults,
+        targetLanguage: {
+          kind: "preset",
+          id: "en",
+          displayName: "英语",
+          modelLabel: "English",
+        },
+        additionalRequirements: "Saved default requirement.",
+      },
+    });
+    runtime.clearCurrentTranslation = vi.fn();
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-clear-page",
+      translation: "旧译文",
+      quality: {
+        pasteBlocked: true,
+        risks: [
+          {
+            id: "quality-clear",
+            code: "protected.number.mismatch",
+            category: "protected_content",
+            severity: "critical",
+            certainty: "deterministic",
+            message: "数字与源文不一致。",
+          },
+        ],
+      },
+    });
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    const requirements = await screen.findByRole("textbox", {
+      name: "附加翻译要求",
+    });
+    await user.clear(requirements);
+    await user.type(requirements, "temporary requirement");
+    await user.click(screen.getByRole("button", { name: "开始翻译" }));
+    expect(await screen.findByRole("heading", { name: "质量风险" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "清空当前内容" }));
+
+    expect(runtime.clearCurrentTranslation).toHaveBeenCalledOnce();
+    expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "目标语言" })).toHaveValue("en");
+    expect(screen.getByRole("textbox", { name: "附加翻译要求" })).toHaveValue(
+      "Saved default requirement.",
+    );
+    expect(screen.queryByRole("region", { name: "译文" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "质量风险" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "复制译文" })).not.toBeInTheDocument();
+  });
+
+  it("restores the current translation when the page reopens in the same process", async () => {
+    const restoredSnapshot: CurrentTranslationSnapshot = {
+      revision: 8,
+      phase: "completed",
+      inputs: {
+        sourceText: "source before hide",
+        targetLanguage: {
+          kind: "preset",
+          id: "en",
+          displayName: "英语",
+          modelLabel: "English",
+        },
+        serviceConfigurationId: "deepseek-flash",
+        qualityMode: "standard",
+        additionalRequirements: "Keep headings short.",
+        taskTerms: [],
+      },
+      task: {
+        taskId: "task-restored",
+        sourceText: "source before hide",
+        targetLanguage: {
+          kind: "preset",
+          id: "en",
+          displayName: "英语",
+          modelLabel: "English",
+        },
+        serviceConfigurationId: "deepseek-flash",
+        qualityMode: "standard",
+        additionalRequirements: "Keep headings short.",
+        taskTerms: [],
+      },
+      partialTranslation: "restored translation",
+      result: {
+        status: "completed",
+        taskId: "task-restored",
+        translation: "restored translation",
+        quality: { risks: [], pasteBlocked: false },
+      },
+      stale: false,
+    };
+    const runtime = createRuntimeForBoundary();
+    runtime.getCurrentTranslation = vi.fn(() => restoredSnapshot);
+    runtime.startStandardTranslation = vi.fn();
+
+    const firstRender = render(
+      <ConfiguredTranslationPage autoStart={false} initialText="" runtime={runtime} />,
+    );
+    expect(
+      await screen.findByRole("region", { name: "译文" }),
+    ).toHaveTextContent("restored translation");
+    expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue(
+      "source before hide",
+    );
+    expect(screen.getByRole("combobox", { name: "目标语言" })).toHaveValue("en");
+    expect(screen.getByRole("textbox", { name: "附加翻译要求" })).toHaveValue(
+      "Keep headings short.",
+    );
+    firstRender.unmount();
+
+    render(
+      <ConfiguredTranslationPage autoStart={false} initialText="" runtime={runtime} />,
+    );
+    expect(
+      await screen.findByRole("region", { name: "译文" }),
+    ).toHaveTextContent("restored translation");
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+  });
+
+  it("cancels and replaces the restored task when a new entry supplies text", async () => {
+    const oldSnapshot: CurrentTranslationSnapshot = {
+      revision: 4,
+      phase: "translating",
+      inputs: {
+        sourceText: "old source",
+        targetLanguage: missingKeyState.defaults.targetLanguage,
+        serviceConfigurationId: "deepseek-flash",
+        qualityMode: "standard",
+        additionalRequirements: "",
+        taskTerms: [],
+      },
+      task: {
+        taskId: "task-old-entry",
+        sourceText: "old source",
+        targetLanguage: missingKeyState.defaults.targetLanguage,
+        serviceConfigurationId: "deepseek-flash",
+        qualityMode: "standard",
+        additionalRequirements: "",
+        taskTerms: [],
+      },
+      partialTranslation: "旧的部分译文",
+      result: null,
+      stale: false,
+    };
+    const runtime = createRuntimeForBoundary();
+    runtime.getCurrentTranslation = vi.fn(() => oldSnapshot);
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-new-entry",
+      translation: "新译文",
+      quality: { risks: [], pasteBlocked: false },
+    });
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart
+        initialText="new source"
+        runtime={runtime}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("region", { name: "译文" }),
+    ).toHaveTextContent("新译文");
+    expect(runtime.clearCurrentTranslation).toHaveBeenCalledOnce();
+    expect(runtime.startStandardTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceText: "new source" }),
+      expect.any(Function),
+    );
+    expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue("new source");
+    expect(screen.queryByText("旧的部分译文")).not.toBeInTheDocument();
+  });
+
+  it("cancels restored work before waiting for service configuration on a new entry", async () => {
+    let resolveConfiguration: (state: RuntimeConfigurationState) => void = () =>
+      undefined;
+    const configurationPromise = new Promise<RuntimeConfigurationState>((resolve) => {
+      resolveConfiguration = resolve;
+    });
+    const oldInputs: CurrentTranslationInputs = {
+      sourceText: "old source",
+      targetLanguage: missingKeyState.defaults.targetLanguage,
+      serviceConfigurationId: "deepseek-flash",
+      qualityMode: "standard",
+      additionalRequirements: "",
+      taskTerms: [],
+    };
+    const runtime = createRuntimeForBoundary();
+    runtime.getCurrentTranslation = vi.fn(
+      () =>
+        ({
+          revision: 3,
+          phase: "translating",
+          inputs: oldInputs,
+          task: { taskId: "task-before-config", ...oldInputs },
+          partialTranslation: "旧的部分译文",
+          result: null,
+          stale: false,
+        }) satisfies CurrentTranslationSnapshot,
+    );
+    runtime.getServiceConfiguration = vi.fn(() => configurationPromise);
+    runtime.clearCurrentTranslation = vi.fn();
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-after-config",
+      translation: "新译文",
+      quality: { risks: [], pasteBlocked: false },
+    });
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart
+        initialText="new source"
+        runtime={runtime}
+      />,
+    );
+
+    await waitFor(() => expect(runtime.clearCurrentTranslation).toHaveBeenCalledOnce());
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue("new source");
+    expect(screen.queryByText("旧的部分译文")).not.toBeInTheDocument();
+
+    resolveConfiguration(await createRuntimeForBoundary().getServiceConfiguration());
+    expect(
+      await screen.findByRole("region", { name: "译文" }),
+    ).toHaveTextContent("新译文");
+  });
+
+  it("does not revive cleared entry text when service configuration resolves late", async () => {
+    const user = userEvent.setup();
+    let resolveConfiguration: (state: RuntimeConfigurationState) => void = () =>
+      undefined;
+    const configurationPromise = new Promise<RuntimeConfigurationState>((resolve) => {
+      resolveConfiguration = resolve;
+    });
+    const runtime = createRuntimeForBoundary();
+    runtime.getServiceConfiguration = vi.fn(() => configurationPromise);
+    runtime.startStandardTranslation = vi.fn();
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart
+        initialText="must stay cleared"
+        runtime={runtime}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "清空当前内容" }));
+    resolveConfiguration(await createRuntimeForBoundary().getServiceConfiguration());
+
+    await waitFor(() =>
+      expect(runtime.getServiceConfiguration).toHaveBeenCalledOnce(),
+    );
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue("");
+    expect(screen.queryByText("must stay cleared")).not.toBeInTheDocument();
+  });
+
+  it("does not auto-send an entry after the user edits it while configuration loads", async () => {
+    const user = userEvent.setup();
+    let resolveConfiguration: (state: RuntimeConfigurationState) => void = () =>
+      undefined;
+    const configurationPromise = new Promise<RuntimeConfigurationState>((resolve) => {
+      resolveConfiguration = resolve;
+    });
+    const runtime = createRuntimeForBoundary();
+    runtime.getServiceConfiguration = vi.fn(() => configurationPromise);
+    runtime.startStandardTranslation = vi.fn();
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart
+        initialText="entry source"
+        runtime={runtime}
+      />,
+    );
+    const source = screen.getByRole("textbox", { name: "源文本" });
+    await user.clear(source);
+    await user.type(source, "edited locally");
+    resolveConfiguration(await createRuntimeForBoundary().getServiceConfiguration());
+
+    await waitFor(() =>
+      expect(runtime.getServiceConfiguration).toHaveBeenCalledOnce(),
+    );
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+    expect(source).toHaveValue("edited locally");
+  });
+
+  it("does not translate cleared text when API key saving resolves late", async () => {
+    const user = userEvent.setup();
+    let resolveSave: (state: RuntimeConfigurationState) => void = () => undefined;
+    const savePromise = new Promise<RuntimeConfigurationState>((resolve) => {
+      resolveSave = resolve;
+    });
+    const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
+      getServiceConfiguration: vi.fn().mockResolvedValue(missingKeyState),
+      saveApiKey: vi.fn(() => savePromise),
+      startStandardTranslation: vi.fn().mockResolvedValue({
+        status: "configuration_required",
+        reason: "missing_api_key",
+        sourceRetained: true,
+        serviceConfiguration: missingKeyService,
+      }),
+      cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
+    };
+    render(
+      <ConfiguredTranslationPage
+        autoStart
+        initialText="clear before save"
+        runtime={runtime}
+      />,
+    );
+    await screen.findByRole("heading", { name: "配置 DeepSeek API Key" });
+    await user.type(screen.getByLabelText("API Key"), "fixture-credential");
+    await user.click(screen.getByRole("button", { name: "保存密钥" }));
+    await user.click(screen.getByRole("button", { name: "清空当前内容" }));
+    vi.mocked(runtime.startStandardTranslation).mockClear();
+    resolveSave({
+      ...missingKeyState,
+      serviceConfiguration: {
+        ...missingKeyService,
+        hasApiKey: true,
+        maskedApiKey: "••••••••tial",
+      },
+    });
+
+    await waitFor(() => expect(runtime.saveApiKey).toHaveBeenCalledOnce());
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue("");
   });
 
   it("keeps an incomplete partial translation and allows confirmed copy only", async () => {
@@ -460,7 +926,7 @@ describe("ConfiguredTranslationPage", () => {
       .fn()
       .mockReturnValueOnce({ status: "confirmation_required" as const })
       .mockReturnValueOnce({ status: "copied" as const });
-    const runtime = createRuntimeForBoundary();
+    const runtime = createRuntimeForBoundary(true);
     runtime.startStandardTranslation = vi.fn().mockResolvedValue({
       status: "failed",
       taskId: "task-partial-risk",
@@ -497,6 +963,8 @@ describe("ConfiguredTranslationPage", () => {
     );
     expect(screen.getByText(/没有按所选协议正常结束/u)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
+    await user.type(screen.getByRole("textbox", { name: "源文本" }), " edited");
+    expect(screen.getByText(/部分译文对应修改前的任务设置/u)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "复制部分译文" }));
     await user.click(screen.getByRole("button", { name: "确认并复制" }));
     expect(copyTranslation).toHaveBeenNthCalledWith(1, "task-partial-risk");
@@ -521,6 +989,7 @@ describe("ConfiguredTranslationPage", () => {
           >,
     ) => void = () => undefined;
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
       saveApiKey: vi.fn(),
       startStandardTranslation: vi.fn((_request, onProgress) => {
@@ -585,6 +1054,7 @@ describe("ConfiguredTranslationPage", () => {
       >;
     });
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
       saveApiKey: vi.fn(),
       startStandardTranslation,
@@ -637,6 +1107,7 @@ describe("ConfiguredTranslationPage", () => {
         return never;
       });
     const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
       getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
       saveApiKey: vi.fn(),
       startStandardTranslation,
@@ -687,8 +1158,9 @@ describe("ConfiguredTranslationPage", () => {
   });
 });
 
-function createRuntimeForBoundary(): RuyiRuntimeBridge {
+function createRuntimeForBoundary(staleOnUpdate = false): RuyiRuntimeBridge {
   return {
+    ...currentTranslationMethods(staleOnUpdate),
     getServiceConfiguration: vi.fn().mockResolvedValue({
       ...missingKeyState,
       serviceConfiguration: {
@@ -700,7 +1172,7 @@ function createRuntimeForBoundary(): RuyiRuntimeBridge {
     saveApiKey: vi.fn(),
     startStandardTranslation: vi.fn(),
     cancelTranslation: vi.fn(),
-      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
-      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
+    copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+    pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
   };
 }

@@ -44,6 +44,18 @@ export function createRuntimeStub(
     cancelTranslation: () => undefined,
     copyTranslation: () => ({ status: "copied" }),
     pasteTranslation: () => ({ status: "pasted" }),
+    getCurrentTranslation: () => null,
+    updateCurrentTranslationInputs: (inputs) => ({
+      revision: 1,
+      phase: "editing",
+      inputs,
+      task: null,
+      partialTranslation: "",
+      result: null,
+      stale: false,
+    }),
+    subscribeCurrentTranslation: () => () => undefined,
+    clearCurrentTranslation: () => undefined,
     ...overrides,
   };
 }
