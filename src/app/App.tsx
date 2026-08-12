@@ -1,13 +1,13 @@
-import type { TranslationAdapter } from "../translation/translation-adapter";
-import { TranslationPage } from "../translation/TranslationPage";
+import type { RuyiRuntimeBridge } from "../runtime/contracts";
+import { ConfiguredTranslationPage } from "../translation/ConfiguredTranslationPage";
 import type { EntryIntent } from "../utools/entry-intent";
 
 export interface AppProps {
   intent: EntryIntent;
-  translate: TranslationAdapter;
+  runtime: RuyiRuntimeBridge;
 }
 
-export function App({ intent, translate }: AppProps) {
+export function App({ intent, runtime }: AppProps) {
   if (intent.page === "settings") {
     return (
       <main className="app-shell">
@@ -18,10 +18,10 @@ export function App({ intent, translate }: AppProps) {
   }
 
   return (
-    <TranslationPage
+    <ConfiguredTranslationPage
       autoStart={intent.autoStart}
       initialText={intent.sourceText}
-      translate={translate}
+      runtime={runtime}
     />
   );
 }

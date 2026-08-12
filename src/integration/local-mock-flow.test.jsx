@@ -1,26 +1,41 @@
 /** @vitest-environment jsdom */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { App } from "../app/App";
-import { translateWithPreload } from "../translation/browser-translation-adapter";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
 const mockServicePath = resolve(projectRoot, "scripts/mock-translation-server.mjs");
 const preloadPath = resolve(projectRoot, "public/preload.js");
+const nativeRequire = createRequire(preloadPath);
+const plainValues = new Map();
+const cryptoValues = new Map();
+const credentialFixture = `fixture-${randomUUID()}-1234`;
+
+function memoryStorage(values) {
+  return {
+    getItem: (key) => values.get(key),
+    setItem: (key, value) => values.set(key, structuredClone(value)),
+    removeItem: (key) => values.delete(key),
+  };
+}
 
 let mockService;
+let runtime;
 
 beforeAll(async () => {
   mockService = spawn(process.execPath, [mockServicePath], {
     cwd: projectRoot,
+    env: { ...process.env, RUYI_MOCK_CREDENTIAL: credentialFixture },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -46,22 +61,50 @@ beforeAll(async () => {
     });
   });
 
+  const runtimeModule = nativeRequire("./lib/ruyi-runtime.cjs");
+  const preloadRequire = (id) => {
+    if (id === "./lib/ruyi-runtime.cjs") {
+      return {
+        ...runtimeModule,
+        createRuyiRuntime(options) {
+          return runtimeModule.createRuyiRuntime({
+            ...options,
+            servicePreset: {
+              id: "deepseek-flash",
+              name: "DeepSeek Flash",
+              type: "deepseek-official",
+              protocol: "chat-completions",
+              translationUrl: "http://127.0.0.1:43120/chat/completions",
+              modelListUrl: "http://127.0.0.1:43120/models",
+              authentication: "bearer",
+              model: "deepseek-v4-flash",
+              stream: true,
+            },
+          });
+        },
+      };
+    }
+    return nativeRequire(id);
+  };
   const preloadSource = await readFile(preloadPath, "utf8");
-  const preloadWindow = {};
+  const preloadWindow = {
+    utools: {
+      dbStorage: memoryStorage(plainValues),
+      dbCryptoStorage: memoryStorage(cryptoValues),
+    },
+  };
   runInNewContext(
     preloadSource,
     {
-      Buffer,
-      require: createRequire(preloadPath),
+      require: preloadRequire,
       window: preloadWindow,
     },
     { filename: preloadPath },
   );
-  window.ruyiTranslation = preloadWindow.ruyiTranslation;
+  runtime = preloadWindow.ruyiTranslation;
 });
 
 afterAll(async () => {
-  delete window.ruyiTranslation;
   if (!mockService || mockService.exitCode !== null) {
     return;
   }
@@ -72,20 +115,33 @@ afterAll(async () => {
 });
 
 describe("controlled local translation flow", () => {
-  it("shows the plain translation returned through UI, preload and HTTP", async () => {
+  it("runs UI, preload runtime and HTTP without exposing or persisting source text", async () => {
+    const user = userEvent.setup();
     const sourceText = "  source line\n    indented line  ";
 
     render(
       <App
-        intent={{ page: "translation", sourceText, autoStart: false }}
-        translate={translateWithPreload}
+        intent={{ page: "translation", sourceText, autoStart: true }}
+        runtime={runtime}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    const apiKeyInput = await screen.findByLabelText("API Key");
+    await user.type(apiKeyInput, credentialFixture);
+    await user.click(screen.getByRole("button", { name: "保存密钥" }));
+    expect(
+      await screen.findByRole("dialog", { name: "确认发送翻译数据" }),
+    ).toHaveTextContent("http://127.0.0.1:43120/chat/completions");
+    await user.click(screen.getByRole("button", { name: "同意并发送" }));
 
     expect(await screen.findByRole("region", { name: "译文" })).toHaveTextContent(
       "这是受控本地模拟服务返回的纯译文。",
     );
     expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue(sourceText);
+    expect(screen.queryByText(credentialFixture)).not.toBeInTheDocument();
+    expect([...cryptoValues.values()]).toEqual([credentialFixture]);
+    expect(JSON.stringify([...plainValues.values()])).not.toContain(sourceText);
+    expect(JSON.stringify([...plainValues.values()])).not.toContain(
+      credentialFixture,
+    );
   });
 });

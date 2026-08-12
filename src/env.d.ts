@@ -1,6 +1,4 @@
-interface RuyiTranslationBridge {
-  translate(sourceText: string): Promise<string>;
-}
+type RuyiTranslationBridge = import("./runtime/contracts").RuyiRuntimeBridge;
 
 interface UToolsPluginEnterAction {
   code: string;

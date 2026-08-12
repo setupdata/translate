@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
+import { createRuntimeStub } from "../test/runtime-stub";
 import { App } from "./App";
 
 describe("App", () => {
@@ -8,7 +9,7 @@ describe("App", () => {
     render(
       <App
         intent={{ page: "translation", sourceText: "", autoStart: false }}
-        translate={vi.fn()}
+        runtime={createRuntimeStub()}
       />,
     );
 
@@ -17,7 +18,7 @@ describe("App", () => {
   });
 
   it("renders the settings page for the settings command", () => {
-    render(<App intent={{ page: "settings" }} translate={vi.fn()} />);
+    render(<App intent={{ page: "settings" }} runtime={createRuntimeStub()} />);
 
     expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "源文本" })).not.toBeInTheDocument();

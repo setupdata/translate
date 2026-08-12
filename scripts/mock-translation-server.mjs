@@ -4,11 +4,25 @@ const HOST = "127.0.0.1";
 const PORT = 43120;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const TRANSLATION = "这是受控本地模拟服务返回的纯译文。";
+const expectedCredential = process.env.RUYI_MOCK_CREDENTIAL;
+
+if (!expectedCredential) {
+  throw new Error("缺少 RUYI_MOCK_CREDENTIAL，模拟服务拒绝启动。");
+}
+
+function sendJson(response, status, payload) {
+  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(payload));
+}
 
 const server = createServer((request, response) => {
-  if (request.method !== "POST" || request.url !== "/translate") {
-    response.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ error: "not_found" }));
+  if (request.method !== "POST" || request.url !== "/chat/completions") {
+    sendJson(response, 404, { error: "not_found" });
+    return;
+  }
+
+  if (request.headers.authorization !== `Bearer ${expectedCredential}`) {
+    sendJson(response, 401, { error: "authentication_error" });
     return;
   }
 
@@ -18,8 +32,7 @@ const server = createServer((request, response) => {
   request.on("data", (chunk) => {
     requestBytes += chunk.length;
     if (requestBytes > MAX_REQUEST_BYTES) {
-      response.writeHead(413, { "Content-Type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ error: "request_too_large" }));
+      sendJson(response, 413, { error: "request_too_large" });
       request.destroy();
       return;
     }
@@ -33,17 +46,35 @@ const server = createServer((request, response) => {
 
     try {
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (typeof payload.sourceText !== "string" || payload.sourceText.trim() === "") {
-        response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        response.end(JSON.stringify({ error: "invalid_source_text" }));
+      const userMessage = payload.messages?.find((message) => message.role === "user");
+      const translationInput = JSON.parse(userMessage?.content ?? "null");
+      if (
+        payload.model !== "deepseek-v4-flash" ||
+        payload.stream !== true ||
+        payload.thinking?.type !== "disabled" ||
+        translationInput?.qualityMode !== "standard" ||
+        translationInput?.mode !== "full_document" ||
+        typeof translationInput?.sourceText !== "string" ||
+        translationInput.sourceText.trim() === ""
+      ) {
+        sendJson(response, 400, { error: "invalid_translation_request" });
         return;
       }
 
-      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ translation: TRANSLATION }));
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+      });
+      response.write(
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "hidden", content: TRANSLATION.slice(0, 10) } }] })}\n\n`,
+      );
+      response.write(": keep-alive\n\n");
+      response.write(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: TRANSLATION.slice(10) } }] })}\n\n`,
+      );
+      response.end("data: [DONE]\n\n");
     } catch {
-      response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ error: "invalid_json" }));
+      sendJson(response, 400, { error: "invalid_json" });
     }
   });
 });

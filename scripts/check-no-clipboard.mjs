@@ -2,12 +2,13 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
-const TARGETS = [resolve(PROJECT_ROOT, "src"), resolve(PROJECT_ROOT, "public/preload.js")];
-const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx"]);
+const TARGETS = [resolve(PROJECT_ROOT, "src"), resolve(PROJECT_ROOT, "public")];
+const SOURCE_EXTENSIONS = new Set([".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"]);
 const FORBIDDEN = [
   { label: "浏览器剪贴板读取", pattern: /navigator\s*\.\s*clipboard\s*\.\s*read(?:Text)?\s*\(/ },
   { label: "Electron 剪贴板读取", pattern: /clipboard\s*\.\s*read(?:Text|HTML|Image|RTF|Bookmark)?\s*\(/ },
   { label: "uTools 剪贴板文件读取", pattern: /getCopyedFiles\s*\(/ },
+  { label: "uTools 剪贴板文本读取", pattern: /getCopyedText\s*\(/ },
   { label: "剪贴板变化监听", pattern: /(?:onClipboardChange|clipboardchange)/ },
   { label: "定时轮询", pattern: /setInterval\s*\(/ },
 ];

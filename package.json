@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "npm run check:no-clipboard && npm run typecheck && vite build && npm run check:dist",
+    "build": "npm run check:no-clipboard && npm run check:runtime && npm run typecheck && vite build && npm run check:dist",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "npm run check:no-clipboard && vitest run",
     "test:watch": "vitest",
     "mock": "node scripts/mock-translation-server.mjs",
     "check:dist": "node scripts/check-dist.mjs",
+    "check:runtime": "node --check public/preload.js && node --check public/lib/node-chat-transport.cjs && node --check public/lib/prompts.cjs && node --check public/lib/ruyi-runtime.cjs && node --check scripts/mock-translation-server.mjs",
     "check:no-clipboard": "node scripts/check-no-clipboard.mjs"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.4",
+    "@types/node": "26.2.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "6.0.5",

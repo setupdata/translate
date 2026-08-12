@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createRuntimeStub } from "../test/runtime-stub";
 import { App } from "./App";
 
 describe("clipboard safety", () => {
@@ -18,16 +19,26 @@ describe("clipboard safety", () => {
     });
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const addEventListenerSpy = vi.spyOn(window, "addEventListener");
-    const translate = vi.fn().mockResolvedValue("译文");
+    const startStandardTranslation = vi.fn().mockImplementation(async (request) => ({
+      status: "completed",
+      taskId: request.taskId,
+      translation: "译文",
+    }));
 
     render(
       <App
         intent={{ page: "translation", sourceText: "source", autoStart: false }}
-        translate={translate}
+        runtime={createRuntimeStub({ startStandardTranslation })}
       />,
     );
     await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    setIntervalSpy.mockClear();
+    await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+      await Promise.resolve();
       await Promise.resolve();
     });
 

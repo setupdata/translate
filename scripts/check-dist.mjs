@@ -3,7 +3,15 @@ import { resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const distDirectory = resolve(projectRoot, "dist");
-const requiredFiles = ["index.html", "plugin.json", "preload.js", "logo.svg"];
+const requiredFiles = [
+  "index.html",
+  "plugin.json",
+  "preload.js",
+  "logo.svg",
+  "lib/node-chat-transport.cjs",
+  "lib/prompts.cjs",
+  "lib/ruyi-runtime.cjs",
+];
 
 await Promise.all(requiredFiles.map((file) => access(resolve(distDirectory, file))));
 
