@@ -24,6 +24,7 @@ const official: ServiceConfigurationView = {
   maskedApiKey: "••••••••1234",
   cachedModels: [],
   modelsFetchedAt: null,
+  performanceSummary: null,
 };
 
 const custom: ServiceConfigurationView = {
@@ -40,6 +41,7 @@ const custom: ServiceConfigurationView = {
   maskedApiKey: null,
   cachedModels: ["older-model"],
   modelsFetchedAt: "2026-08-12T00:00:00.000Z",
+  performanceSummary: null,
 };
 
 const initialState: ServiceConfigurationsState = {

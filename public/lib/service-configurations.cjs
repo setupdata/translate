@@ -15,6 +15,7 @@ const DEEPSEEK_FLASH_PRESET = Object.freeze({
   stream: true,
   cachedModels: [],
   modelsFetchedAt: null,
+  performanceSamples: [],
 });
 
 function configurationError(field, message, code = "configuration_error") {
@@ -150,6 +151,11 @@ function validateServiceConfiguration(
   }
   const modelListUnchanged = existing && existing.modelListUrl === modelListUrl;
   const translationUrlUnchanged = existing && existing.translationUrl === translationUrl;
+  const performanceCompatible =
+    translationUrlUnchanged &&
+    existing.model === model &&
+    existing.protocol === protocol &&
+    Boolean(existing.stream) === Boolean(input.stream);
   return {
     id,
     name,
@@ -168,9 +174,40 @@ function validateServiceConfiguration(
       modelListUnchanged && typeof existing.modelsFetchedAt === "string"
         ? existing.modelsFetchedAt
         : null,
+    performanceSamples:
+      performanceCompatible && Array.isArray(existing.performanceSamples)
+        ? existing.performanceSamples.map((sample) => ({ ...sample }))
+        : [],
     ...(translationUrlUnchanged && existing.confirmedTranslationUrl
       ? { confirmedTranslationUrl: existing.confirmedTranslationUrl }
       : {}),
+  };
+}
+
+function performanceSummary(configuration) {
+  const samples = Array.isArray(configuration.performanceSamples)
+    ? configuration.performanceSamples.filter(
+        (sample) =>
+          sample &&
+          Number.isFinite(sample.firstOutputMilliseconds) &&
+          sample.firstOutputMilliseconds >= 0 &&
+          Number.isFinite(sample.completionMilliseconds) &&
+          sample.completionMilliseconds > 0 &&
+          Number.isFinite(sample.outputCodePoints) &&
+          sample.outputCodePoints >= 0 &&
+          Number.isFinite(sample.averageOutputCodePointsPerSecond) &&
+          sample.averageOutputCodePointsPerSecond >= 0,
+      )
+    : [];
+  if (samples.length === 0) return null;
+  const average = (field) =>
+    samples.reduce((total, sample) => total + sample[field], 0) / samples.length;
+  return {
+    sampleCount: samples.length,
+    averageFirstOutputMilliseconds: Math.round(average("firstOutputMilliseconds")),
+    averageCompletionMilliseconds: Math.round(average("completionMilliseconds")),
+    averageOutputCodePointsPerSecond:
+      Math.round(average("averageOutputCodePointsPerSecond") * 100) / 100,
   };
 }
 
@@ -195,6 +232,7 @@ function serviceConfigurationView(configuration, apiKey) {
       typeof configuration.modelsFetchedAt === "string"
         ? configuration.modelsFetchedAt
         : null,
+    performanceSummary: performanceSummary(configuration),
   };
 }
 

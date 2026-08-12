@@ -19,6 +19,20 @@ export type ServiceConfigurationView = {
   maskedApiKey: string | null;
   cachedModels: string[];
   modelsFetchedAt: string | null;
+  performanceSummary: ServicePerformanceSummary | null;
+};
+
+export type ServicePerformanceSummary = {
+  sampleCount: number;
+  averageFirstOutputMilliseconds: number;
+  averageCompletionMilliseconds: number;
+  averageOutputCodePointsPerSecond: number;
+};
+
+export type ParallelAccelerationAdvice = {
+  suggested: boolean;
+  estimatedSeconds: number | null;
+  reason: "no_samples_long_source" | "estimated_over_45_seconds" | null;
 };
 
 export type ServiceConfigurationInput = {
@@ -58,6 +72,8 @@ export type StandardTranslationRequest = {
   referenceTranslationIds?: string[] | null;
   referencePreviewToken?: string;
   confirmationToken?: string;
+  parallelAcceleration?: boolean;
+  parallelConcurrency?: number;
 };
 
 export type TaskTerm = {
@@ -196,6 +212,19 @@ export type TranslationProgressEvent =
   | { type: "started"; taskId: string }
   | { type: "text_delta"; taskId: string; delta: string }
   | {
+      type: "parallel_plan";
+      taskId: string;
+      parallel: ParallelTranslationSummary;
+    }
+  | {
+      type: "segment_progress";
+      taskId: string;
+      completed: number;
+      total: number;
+      inFlight: number;
+      concurrency: number;
+    }
+  | {
       type: "finished";
       taskId: string;
       status: "completed" | "failed" | "cancelled";
@@ -222,6 +251,22 @@ export type TranslationQuality = {
   pasteBlocked: boolean;
 };
 
+export type ParallelTranslationSummary = {
+  requested: boolean;
+  applied: boolean;
+  concurrency: number;
+  segmentCount: number;
+  fallbackReason: string | null;
+};
+
+export type ParallelTranslationProgress = {
+  completed: number;
+  total: number;
+  inFlight: number;
+  concurrency: number;
+  fallbackReason: string | null;
+};
+
 export type TranslationHostActionResult =
   | { status: "copied" | "pasted" }
   | { status: "confirmation_required" | "blocked" | "unavailable" };
@@ -235,6 +280,7 @@ export type StandardTranslationResult =
         | "invalid_target_language"
         | "invalid_confirmation"
         | "invalid_reference_selection"
+        | "invalid_parallel_configuration"
         | "invalid_terminology"
         | "terminology_conflict"
         | "terminology_limit_exceeded"
@@ -266,7 +312,8 @@ export type StandardTranslationResult =
         protocol: "Chat Completions" | "Responses";
         model: string;
         dataSent: string[];
-        callCount: 1;
+        callCount: number;
+        parallel?: ParallelTranslationSummary;
       };
     }
   | {
@@ -274,6 +321,7 @@ export type StandardTranslationResult =
       taskId: string;
       translation: string;
       quality: TranslationQuality;
+      parallel?: ParallelTranslationSummary;
     }
   | {
       status: "failed";
@@ -281,6 +329,7 @@ export type StandardTranslationResult =
       sourceRetained: true;
       partialTranslation?: string;
       quality?: TranslationQuality;
+      parallel?: ParallelTranslationSummary;
       error: {
         code: StableTranslationErrorCode;
         message: string;
@@ -298,6 +347,8 @@ export type CurrentTranslationInputs = {
   additionalRequirements: string;
   taskTerms: TaskTerm[];
   referenceTranslationIds: string[] | null;
+  parallelAcceleration: boolean;
+  parallelConcurrency: number;
 };
 
 export type CurrentTranslationSnapshot = {
@@ -314,6 +365,7 @@ export type CurrentTranslationSnapshot = {
   task: (CurrentTranslationInputs & { taskId: string }) | null;
   partialTranslation: string;
   result: StandardTranslationResult | null;
+  parallelProgress: ParallelTranslationProgress | null;
   stale: boolean;
 };
 
@@ -361,6 +413,11 @@ export interface RuyiRuntimeBridge {
     credentialForm: HTMLFormElement,
   ): Promise<ServiceConfigurationsState>;
   deleteServiceApiKey(configurationId: string): Promise<ServiceConfigurationsState>;
+  clearServicePerformanceData(configurationId: string): Promise<ServiceConfigurationsState>;
+  getParallelAccelerationAdvice(
+    sourceText: string,
+    configurationId?: string,
+  ): ParallelAccelerationAdvice;
   testServiceConnection(request: {
     operationId: string;
     configurationId: string;

@@ -36,6 +36,8 @@ describe("ConfiguredTranslationPage terminology", () => {
       additionalRequirements: "",
       taskTerms: [{ sourceTerm: "old source", preferredTarget: "旧译法" }],
       referenceTranslationIds: null,
+      parallelAcceleration: false,
+      parallelConcurrency: 3,
     };
     const startStandardTranslation = vi.fn(async (request) => ({
       status: "completed" as const,
@@ -50,6 +52,7 @@ describe("ConfiguredTranslationPage terminology", () => {
       task: null,
       partialTranslation: "",
       result: null,
+      parallelProgress: null,
       stale: false,
     }));
     const runtime = createRuntimeStub({
@@ -69,6 +72,7 @@ describe("ConfiguredTranslationPage terminology", () => {
           translation: "旧译文",
           quality: { risks: [], pasteBlocked: false },
         },
+        parallelProgress: null,
         stale: false,
       })),
       updateCurrentTranslationInputs,

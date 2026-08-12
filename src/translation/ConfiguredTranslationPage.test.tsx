@@ -27,6 +27,7 @@ const missingKeyService: ServiceConfigurationView = {
   maskedApiKey: null,
   cachedModels: [],
   modelsFetchedAt: null,
+  performanceSummary: null,
 };
 
 function currentTranslationMethods(staleOnUpdate = false): Pick<
@@ -43,6 +44,8 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
   | "deleteServiceConfiguration"
   | "saveServiceApiKey"
   | "deleteServiceApiKey"
+  | "clearServicePerformanceData"
+  | "getParallelAccelerationAdvice"
   | "testServiceConnection"
   | "fetchServiceModels"
   | "cancelServiceOperation"
@@ -142,6 +145,7 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
         task: null,
         partialTranslation: "",
         result: null,
+        parallelProgress: null,
         stale: staleOnUpdate,
       }) satisfies CurrentTranslationSnapshot,
     subscribeCurrentTranslation: () => () => undefined,
@@ -154,6 +158,12 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
     deleteServiceConfiguration: vi.fn(async () => configurationsState()),
     saveServiceApiKey: vi.fn(async () => configurationsState()),
     deleteServiceApiKey: vi.fn(async () => configurationsState()),
+    clearServicePerformanceData: vi.fn(async () => configurationsState()),
+    getParallelAccelerationAdvice: vi.fn(() => ({
+      suggested: false,
+      estimatedSeconds: null,
+      reason: null,
+    })),
     testServiceConnection: vi.fn(async () => ({ status: "completed" as const })),
     fetchServiceModels: vi.fn(async () => ({
       status: "completed" as const,
@@ -951,6 +961,8 @@ describe("ConfiguredTranslationPage", () => {
         additionalRequirements: "Keep headings short.",
         taskTerms: [],
         referenceTranslationIds: null,
+        parallelAcceleration: false,
+        parallelConcurrency: 3,
       },
       task: {
         taskId: "task-restored",
@@ -967,6 +979,8 @@ describe("ConfiguredTranslationPage", () => {
         additionalRequirements: "Keep headings short.",
         taskTerms: [],
         referenceTranslationIds: null,
+        parallelAcceleration: false,
+        parallelConcurrency: 3,
       },
       partialTranslation: "restored translation",
       result: {
@@ -975,6 +989,7 @@ describe("ConfiguredTranslationPage", () => {
         translation: "restored translation",
         quality: { risks: [], pasteBlocked: false },
       },
+      parallelProgress: null,
       stale: false,
     };
     const runtime = createRuntimeForBoundary();
@@ -1018,6 +1033,8 @@ describe("ConfiguredTranslationPage", () => {
         additionalRequirements: "",
         taskTerms: [],
         referenceTranslationIds: null,
+        parallelAcceleration: false,
+        parallelConcurrency: 3,
       },
       task: {
         taskId: "task-old-entry",
@@ -1029,9 +1046,12 @@ describe("ConfiguredTranslationPage", () => {
         additionalRequirements: "",
         taskTerms: [],
         referenceTranslationIds: null,
+        parallelAcceleration: false,
+        parallelConcurrency: 3,
       },
       partialTranslation: "旧的部分译文",
       result: null,
+      parallelProgress: null,
       stale: false,
     };
     const runtime = createRuntimeForBoundary();
@@ -1078,6 +1098,8 @@ describe("ConfiguredTranslationPage", () => {
       additionalRequirements: "",
       taskTerms: [],
       referenceTranslationIds: null,
+        parallelAcceleration: false,
+        parallelConcurrency: 3,
     };
     const runtime = createRuntimeForBoundary();
     runtime.getCurrentTranslation = vi.fn(
@@ -1089,6 +1111,7 @@ describe("ConfiguredTranslationPage", () => {
           task: { taskId: "task-before-config", ...oldInputs },
           partialTranslation: "旧的部分译文",
           result: null,
+          parallelProgress: null,
           stale: false,
         }) satisfies CurrentTranslationSnapshot,
     );

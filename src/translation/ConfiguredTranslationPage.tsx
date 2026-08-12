@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CurrentTranslationInputs,
   CurrentTranslationSnapshot,
+  ParallelTranslationProgress,
   RuntimeConfigurationState,
   RuyiRuntimeBridge,
   ServiceConfigurationView,
@@ -27,6 +28,8 @@ type StartTranslationOptions = {
   additionalRequirements: string;
   taskTerms: TaskTerm[];
   referenceTranslationIds: string[] | null;
+  parallelAcceleration: boolean;
+  parallelConcurrency: number;
 };
 
 function createTaskId(): string {
@@ -54,6 +57,8 @@ function buildCurrentInputs(
   additionalRequirements: string,
   taskTerms: TaskTerm[],
   referenceTranslationIds: string[] | null,
+  parallelAcceleration = false,
+  parallelConcurrency = 3,
 ): CurrentTranslationInputs {
   return {
     sourceText,
@@ -64,6 +69,8 @@ function buildCurrentInputs(
     additionalRequirements,
     taskTerms,
     referenceTranslationIds,
+    parallelAcceleration,
+    parallelConcurrency,
   };
 }
 
@@ -91,6 +98,10 @@ export function ConfiguredTranslationPage({
   const [errorMessage, setErrorMessage] = useState("");
   const [partialTranslation, setPartialTranslation] = useState("");
   const [isTranslating, setIsTranslating] = useState(false);
+  const [parallelAcceleration, setParallelAcceleration] = useState(false);
+  const [parallelConcurrency, setParallelConcurrency] = useState(3);
+  const [parallelProgress, setParallelProgress] =
+    useState<ParallelTranslationProgress | null>(null);
   const [confirmRiskCopy, setConfirmRiskCopy] = useState(false);
   const [hostActionMessage, setHostActionMessage] = useState("");
   const [snapshotStale, setSnapshotStale] = useState(false);
@@ -118,6 +129,9 @@ export function ConfiguredTranslationPage({
         setResult(null);
         setPartialTranslation("");
         setIsTranslating(false);
+        setParallelAcceleration(false);
+        setParallelConcurrency(3);
+        setParallelProgress(null);
         setConfirmRiskCopy(false);
         setHostActionMessage("");
         setSnapshotStale(false);
@@ -137,6 +151,9 @@ export function ConfiguredTranslationPage({
       );
       setPartialTranslation(snapshot.partialTranslation);
       setIsTranslating(snapshot.phase === "translating");
+      setParallelAcceleration(snapshot.inputs.parallelAcceleration);
+      setParallelConcurrency(snapshot.inputs.parallelConcurrency);
+      setParallelProgress(snapshot.parallelProgress);
       setSnapshotStale(snapshot.stale);
       if (snapshot.task) {
         taskId.current = snapshot.task.taskId;
@@ -154,6 +171,8 @@ export function ConfiguredTranslationPage({
       selectedDomainProfileId = domainProfileId,
       selectedTaskTerms = taskTerms,
       selectedReferenceTranslationIds = referenceTranslationIds,
+      selectedParallelAcceleration = parallelAcceleration,
+      selectedParallelConcurrency = parallelConcurrency,
     ): CurrentTranslationInputs =>
       buildCurrentInputs(
         source,
@@ -163,6 +182,8 @@ export function ConfiguredTranslationPage({
         requirements,
         selectedTaskTerms,
         selectedReferenceTranslationIds,
+        selectedParallelAcceleration,
+        selectedParallelConcurrency,
       ),
     [
       additionalRequirements,
@@ -172,6 +193,8 @@ export function ConfiguredTranslationPage({
       targetLanguage,
       taskTerms,
       referenceTranslationIds,
+      parallelAcceleration,
+      parallelConcurrency,
     ],
   );
 
@@ -245,6 +268,8 @@ export function ConfiguredTranslationPage({
         setTaskTerms(options.taskTerms);
         setDomainProfileId(options.domainProfileId);
         setReferenceTranslationIds(options.referenceTranslationIds);
+        setParallelAcceleration(options.parallelAcceleration);
+        setParallelConcurrency(options.parallelConcurrency);
       } else if (options.referencePreviewToken) {
         setReferenceTranslationIds(options.referenceTranslationIds);
       }
@@ -252,6 +277,7 @@ export function ConfiguredTranslationPage({
       setResult(null);
       setPartialTranslation("");
       setIsTranslating(false);
+      setParallelProgress(null);
       setSnapshotStale(false);
       const submittedInputs = buildCurrentInputs(
         text,
@@ -261,6 +287,8 @@ export function ConfiguredTranslationPage({
         options.additionalRequirements,
         options.taskTerms,
         options.referenceTranslationIds,
+        options.parallelAcceleration,
+        options.parallelConcurrency,
       );
       try {
         const nextResult = await runtime.startStandardTranslation({
@@ -274,6 +302,8 @@ export function ConfiguredTranslationPage({
           referenceTranslationIds: submittedInputs.referenceTranslationIds,
           referencePreviewToken: options.referencePreviewToken,
           confirmationToken: options.confirmationToken,
+          parallelAcceleration: submittedInputs.parallelAcceleration,
+          parallelConcurrency: submittedInputs.parallelConcurrency,
         }, (event) => {
           if (!mounted.current || generation !== requestGeneration.current) {
             return;
@@ -282,7 +312,23 @@ export function ConfiguredTranslationPage({
             setIsTranslating(true);
           } else if (event.type === "text_delta") {
             setPartialTranslation((current) => current + event.delta);
-          } else {
+          } else if (event.type === "parallel_plan") {
+            setParallelProgress({
+              completed: 0,
+              total: event.parallel.segmentCount,
+              inFlight: 0,
+              concurrency: event.parallel.concurrency,
+              fallbackReason: event.parallel.fallbackReason,
+            });
+          } else if (event.type === "segment_progress") {
+            setParallelProgress({
+              completed: event.completed,
+              total: event.total,
+              inFlight: event.inFlight,
+              concurrency: event.concurrency,
+              fallbackReason: null,
+            });
+          } else if (event.type === "finished") {
             setIsTranslating(false);
           }
         });
@@ -330,6 +376,8 @@ export function ConfiguredTranslationPage({
         previousInputs?.additionalRequirements ?? "",
         [],
         null,
+        previousInputs?.parallelAcceleration ?? false,
+        previousInputs?.parallelConcurrency ?? 3,
       );
       runtime.updateCurrentTranslationInputs(replacementInputs);
       setSourceText(replacementInputs.sourceText);
@@ -337,6 +385,9 @@ export function ConfiguredTranslationPage({
       setAdditionalRequirements(replacementInputs.additionalRequirements);
       setTaskTerms(replacementInputs.taskTerms);
       setReferenceTranslationIds(null);
+      setParallelAcceleration(replacementInputs.parallelAcceleration);
+      setParallelConcurrency(replacementInputs.parallelConcurrency);
+      setParallelProgress(null);
       setReferencePreviewSelection([]);
       setResult(null);
       setPartialTranslation("");
@@ -384,6 +435,8 @@ export function ConfiguredTranslationPage({
               additionalRequirements: autoRequirements,
               taskTerms: autoTaskTerms,
               referenceTranslationIds: null,
+              parallelAcceleration: previousInputs?.parallelAcceleration ?? false,
+              parallelConcurrency: previousInputs?.parallelConcurrency ?? 3,
             },
           );
         } else if (!runtime.getCurrentTranslation()) {
@@ -398,6 +451,8 @@ export function ConfiguredTranslationPage({
             additionalRequirements: state.defaults.additionalRequirements,
             taskTerms: [],
             referenceTranslationIds: null,
+            parallelAcceleration: false,
+            parallelConcurrency: 3,
           });
         }
       })
@@ -435,6 +490,10 @@ export function ConfiguredTranslationPage({
       ? result.quality
       : undefined;
   const resultIsStale = snapshotStale;
+  const parallelAdvice = runtime.getParallelAccelerationAdvice(
+    sourceText,
+    configuration?.serviceConfiguration?.id,
+  );
 
   function replaceTaskTerms(nextTaskTerms: TaskTerm[]) {
     deferredActionGeneration.current += 1;
@@ -521,6 +580,8 @@ export function ConfiguredTranslationPage({
               additionalRequirements,
               taskTerms,
               referenceTranslationIds: null,
+              parallelAcceleration,
+              parallelConcurrency,
             });
           }
         }}
@@ -648,6 +709,8 @@ export function ConfiguredTranslationPage({
                     additionalRequirements,
                     taskTerms,
                     referenceTranslationIds: null,
+                    parallelAcceleration,
+                    parallelConcurrency,
                   },
                 );
               }
@@ -698,6 +761,57 @@ export function ConfiguredTranslationPage({
             );
           }}
         />
+        <fieldset className="parallel-acceleration-settings">
+          <legend>长文本翻译</legend>
+          <label htmlFor="parallel-acceleration">
+            <input
+              id="parallel-acceleration"
+              type="checkbox"
+              checked={parallelAcceleration}
+              onChange={(event) => {
+                const nextParallelAcceleration = event.target.checked;
+                deferredActionGeneration.current += 1;
+                setParallelAcceleration(nextParallelAcceleration);
+                publishInputs({
+                  ...currentInputs(),
+                  parallelAcceleration: nextParallelAcceleration,
+                });
+              }}
+            />
+            并发加速
+          </label>
+          <label htmlFor="parallel-concurrency">并发数</label>
+          <select
+            id="parallel-concurrency"
+            value={parallelConcurrency}
+            disabled={!parallelAcceleration}
+            onChange={(event) => {
+              const nextParallelConcurrency = Number(event.target.value);
+              deferredActionGeneration.current += 1;
+              setParallelConcurrency(nextParallelConcurrency);
+              publishInputs({
+                ...currentInputs(),
+                parallelConcurrency: nextParallelConcurrency,
+              });
+            }}
+          >
+            {[1, 2, 3, 4, 5, 6].map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+          <p>
+            并发加速只会在你手动开启后使用，默认并发数为 3；关闭时仍按全文发起一次翻译。
+          </p>
+          {parallelAdvice.suggested ? (
+            <p className="parallel-advice">
+              {parallelAdvice.reason === "no_samples_long_source"
+                ? "当前服务暂无速度样本，源文本已超过 4,000 个码点，建议手动开启并发加速。"
+                : `按当前服务的本地速度样本预计约 ${parallelAdvice.estimatedSeconds} 秒，建议手动开启并发加速。`}
+            </p>
+          ) : null}
+        </fieldset>
         <fieldset className="task-terms-editor">
           <legend>本次术语</legend>
           <p>本次术语优先于行业术语和通用术语，只保留在当前翻译内存中。</p>
@@ -806,7 +920,14 @@ export function ConfiguredTranslationPage({
 
       {isTranslating ? (
         <section className="translation-progress">
-          <p role="status">正在翻译…</p>
+          <p role="status">
+            {parallelProgress && parallelProgress.total > 1
+              ? `并发翻译：已完成 ${parallelProgress.completed}/${parallelProgress.total} 段，正在处理 ${parallelProgress.inFlight} 段。`
+              : "正在翻译…"}
+          </p>
+          {parallelProgress?.fallbackReason ? (
+            <p className="parallel-fallback-note">{parallelProgress.fallbackReason}</p>
+          ) : null}
           <div
             role="region"
             className="translation-live-text"
@@ -825,6 +946,11 @@ export function ConfiguredTranslationPage({
             取消翻译
           </button>
         </section>
+      ) : null}
+
+      {(result?.status === "completed" || result?.status === "failed") &&
+      result.parallel?.fallbackReason ? (
+        <p className="parallel-fallback-note">{result.parallel.fallbackReason}</p>
       ) : null}
 
       {result?.status === "configuration_required" &&
@@ -862,6 +988,8 @@ export function ConfiguredTranslationPage({
                     additionalRequirements,
                     taskTerms,
                     referenceTranslationIds,
+                    parallelAcceleration,
+                    parallelConcurrency,
                   });
                 })
                 .catch(() => {
@@ -942,6 +1070,8 @@ export function ConfiguredTranslationPage({
                   additionalRequirements,
                   taskTerms,
                   referenceTranslationIds: referencePreviewSelection,
+                  parallelAcceleration,
+                  parallelConcurrency,
                 });
               }}
             >
@@ -974,6 +1104,11 @@ export function ConfiguredTranslationPage({
             ))}
           </ul>
           <p>标准模式本次发起 {confirmation.preview.callCount} 次翻译调用。</p>
+          {confirmation.preview.parallel?.fallbackReason ? (
+            <p className="parallel-fallback-note">
+              {confirmation.preview.parallel.fallbackReason}
+            </p>
+          ) : null}
           <div className="dialog-actions">
             <button
               type="button"
@@ -998,6 +1133,8 @@ export function ConfiguredTranslationPage({
                       additionalRequirements,
                       taskTerms,
                       referenceTranslationIds,
+                      parallelAcceleration,
+                      parallelConcurrency,
                     },
                   );
                 }
@@ -1055,6 +1192,7 @@ export function ConfiguredTranslationPage({
 
       {result?.status === "completed" ? (
         <>
+          <p role="status">翻译已完成。</p>
           <section aria-label="译文">{result.translation}</section>
           <div className="translation-actions">
             <button

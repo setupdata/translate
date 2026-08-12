@@ -20,6 +20,7 @@ const requiredFiles = [
   "lib/terminology-csv.cjs",
   "lib/text-limits.cjs",
   "lib/translation-protocol.cjs",
+  "lib/translation-segmentation.cjs",
 ];
 
 await Promise.all(requiredFiles.map((file) => access(resolve(distDirectory, file))));

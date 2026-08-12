@@ -347,6 +347,20 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                         ? "不鉴权"
                         : configuration.maskedApiKey ?? "未配置 API Key"}
                     </p>
+                    {configuration.performanceSummary ? (
+                      <p className="service-performance-summary">
+                        {configuration.performanceSummary.sampleCount} 次本地样本；平均首段输出
+                        {" "}
+                        {(configuration.performanceSummary.averageFirstOutputMilliseconds / 1_000).toFixed(1)}
+                        {" 秒，平均完成 "}
+                        {(configuration.performanceSummary.averageCompletionMilliseconds / 1_000).toFixed(1)}
+                        {" 秒，平均 "}
+                        {configuration.performanceSummary.averageOutputCodePointsPerSecond.toFixed(1)}
+                        {" 码点/秒。"}
+                      </p>
+                    ) : (
+                      <p className="service-performance-summary">暂无本地性能样本。</p>
+                    )}
                     {current && <strong>当前使用</strong>}
                   </div>
                   <div className="compact-actions">
@@ -404,6 +418,18 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                       }
                     >
                       下移
+                    </button>
+                    <button
+                      aria-label={`清除 ${configuration.name} 的性能数据`}
+                      type="button"
+                      disabled={!configuration.performanceSummary}
+                      onClick={() =>
+                        void runMutation(() =>
+                          runtime.clearServicePerformanceData(configuration.id),
+                        )
+                      }
+                    >
+                      清除性能数据
                     </button>
                     <button
                       aria-label={`删除 ${configuration.name}`}
@@ -647,6 +673,9 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
           服务配置名称、地址、协议、模型和模型列表缓存在本地数据库中；API Key、术语库和行业配置使用加密存储。开启 uTools 数据同步后，这些数据可能形成远端或其他设备副本。
         </p>
         <p>
+          最近请求的汇总性能数据只记录首个输出时间、完成耗时、输出码点数、平均速度、翻译方式和分段数，不含源文本、译文、用户标识或单次请求日志，也不会发送给模型服务。它只用于等待提示，可在每项配置中清除；若已开启上述同步功能，仍可能形成同步副本。
+        </p>
+        <p>
           可用每项配置的“删除”按钮删除该配置、API Key 和模型列表缓存，也可在编辑配置时单独“删除 API Key”。已同步的副本还需在 uTools 的同步数据管理中处理；删除本地数据不能删除模型服务已经保留的请求内容。
         </p>
       </section>
@@ -659,7 +688,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
           role="dialog"
         >
           <h2 id="delete-configuration-heading">确认删除服务配置</h2>
-          <p>将删除“{pendingDelete.name}”及其 API Key 和模型列表缓存。</p>
+          <p>将删除“{pendingDelete.name}”及其 API Key、模型列表缓存和性能数据。</p>
           <div className="dialog-actions">
             <button
               aria-label="取消删除"

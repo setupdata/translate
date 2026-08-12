@@ -18,6 +18,7 @@ export const configuredRuntimeState: RuntimeConfigurationState = {
     maskedApiKey: "••••••••1234",
     cachedModels: [],
     modelsFetchedAt: null,
+    performanceSummary: null,
   },
   defaults: {
     targetLanguage: {
@@ -137,6 +138,18 @@ export function createRuntimeStub(
       currentServiceConfigurationId: "deepseek-flash",
       serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
     }),
+    clearServicePerformanceData: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    getParallelAccelerationAdvice: (sourceText) => ({
+      suggested: Array.from(sourceText.replace(/\r\n/gu, "\n")).length > 4_000,
+      estimatedSeconds: null,
+      reason:
+        Array.from(sourceText.replace(/\r\n/gu, "\n")).length > 4_000
+          ? "no_samples_long_source"
+          : null,
+    }),
     testServiceConnection: async () => ({ status: "completed" }),
     fetchServiceModels: async () => ({
       status: "completed",
@@ -163,6 +176,7 @@ export function createRuntimeStub(
       task: null,
       partialTranslation: "",
       result: null,
+      parallelProgress: null,
       stale: false,
     }),
     subscribeCurrentTranslation: () => () => undefined,

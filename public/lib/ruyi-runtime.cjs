@@ -2,7 +2,11 @@ const SETTINGS_KEY = "ruyi.settings.v1";
 const API_KEY_PREFIX = "ruyi.secret.api-key.";
 const TERMINOLOGY_KEY = "ruyi.secret.terminology.v1";
 const { randomBytes } = require("crypto");
-const { inspectSourceText } = require("./text-limits.cjs");
+const {
+  countCodePoints,
+  createOutputAccumulator,
+  inspectSourceText,
+} = require("./text-limits.cjs");
 const {
   extractProtectedItems,
   inspectTranslationQuality,
@@ -35,6 +39,12 @@ const {
   exportTermbaseCsv: serializeTermbaseCsv,
   previewTermbaseCsv: inspectTermbaseCsv,
 } = require("./terminology-csv.cjs");
+const {
+  createTranslationPlan,
+  mergeSegmentTranslations,
+  parallelAccelerationAdvice,
+  runSegmentPool,
+} = require("./translation-segmentation.cjs");
 
 const CONNECTION_TEST_SOURCE_TEXT = "Connection test";
 const CONNECTION_TEST_MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -42,6 +52,7 @@ const CONNECTION_TEST_NO_DATA_TIMEOUT_MILLISECONDS = 30_000;
 const CONNECTION_TEST_TOTAL_TIMEOUT_MILLISECONDS = 120_000;
 const MODEL_LIST_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MODEL_LIST_TOTAL_TIMEOUT_MILLISECONDS = 30_000;
+const TRANSLATION_TOTAL_TIMEOUT_MILLISECONDS = 10 * 60 * 1_000;
 
 const DEFAULTS = Object.freeze({
   targetLanguage: Object.freeze({
@@ -58,6 +69,7 @@ function createInitialSettings(servicePreset = DEEPSEEK_FLASH_PRESET) {
   const initialConfiguration = {
     cachedModels: [],
     modelsFetchedAt: null,
+    performanceSamples: [],
     ...servicePreset,
   };
   return {
@@ -257,6 +269,11 @@ function normalizeCurrentInputs(inputs) {
     referenceTranslationIds: normalizeReferenceTranslationIds(
       inputs && inputs.referenceTranslationIds,
     ),
+    parallelAcceleration: Boolean(inputs && inputs.parallelAcceleration),
+    parallelConcurrency:
+      inputs && Number.isInteger(inputs.parallelConcurrency)
+        ? inputs.parallelConcurrency
+        : 3,
   });
 }
 
@@ -270,11 +287,67 @@ function inputsFingerprint(inputs) {
     inputs.additionalRequirements,
     inputs.taskTerms,
     inputs.referenceTranslationIds,
+    inputs.parallelAcceleration,
+    inputs.parallelConcurrency,
   ]);
 }
 
 function referencePreviewFingerprint(inputs) {
   return inputsFingerprint({ ...inputs, referenceTranslationIds: null });
+}
+
+function parallelSummaryFor(inputs, plan) {
+  if (!inputs.parallelAcceleration) return null;
+  const applied = plan.mode === "segmented";
+  return freezeDeep({
+    requested: true,
+    applied,
+    concurrency: inputs.parallelConcurrency,
+    segmentCount: applied ? plan.segments.length : 1,
+    fallbackReason: plan.fallbackReason,
+  });
+}
+
+function segmentTranslationInput(fullDocumentInput, segment) {
+  const protectedItems = extractProtectedItems(segment.ownedSource, segment.id).map(
+    (item, index) => ({
+      ...item,
+      id: `${segment.id}-protected-${index + 1}`,
+      sourceRange: {
+        start: item.sourceRange.start + segment.sourceStart,
+        end: item.sourceRange.end + segment.sourceStart,
+      },
+    }),
+  );
+  const {
+    sourceText: _sourceText,
+    protectedItems: _documentProtectedItems,
+    ...baseInput
+  } = fullDocumentInput;
+  return {
+    ...baseInput,
+    protectedItems,
+    mode: "segment",
+    segment: {
+      id: segment.id,
+      ordinal: segment.ordinal,
+      sourceStart: segment.sourceStart,
+      sourceEnd: segment.sourceEnd,
+      sourceContextBefore: segment.sourceContextBefore,
+      ownedSource: segment.ownedSource,
+      sourceContextAfter: segment.sourceContextAfter,
+    },
+  };
+}
+
+function transportResponseError(response) {
+  const code = mapHttpError(response.status);
+  const requestId = response.headers && response.headers["x-request-id"];
+  return Object.assign(new Error(errorMessage(code)), {
+    code,
+    httpStatus: response.status,
+    ...(typeof requestId === "string" ? { requestId } : {}),
+  });
 }
 
 function createRuyiRuntime({
@@ -315,6 +388,9 @@ function createRuyiRuntime({
         task,
         partialTranslation: next.partialTranslation || "",
         result: next.result ? freezeDeep(next.result) : null,
+        parallelProgress: next.parallelProgress
+          ? freezeDeep({ ...next.parallelProgress })
+          : null,
         stale: Boolean(
           next.stale ||
             (task &&
@@ -328,6 +404,8 @@ function createRuyiRuntime({
                 additionalRequirements: task.additionalRequirements,
                 taskTerms: task.taskTerms,
                 referenceTranslationIds: task.referenceTranslationIds,
+                parallelAcceleration: task.parallelAcceleration,
+                parallelConcurrency: task.parallelConcurrency,
               })),
         ),
       });
@@ -353,6 +431,7 @@ function createRuyiRuntime({
             task: null,
             partialTranslation: "",
             result: null,
+            parallelProgress: null,
           },
     );
   }
@@ -405,6 +484,8 @@ function createRuyiRuntime({
             : "",
       taskTerms: request.taskTerms,
       referenceTranslationIds: request.referenceTranslationIds,
+      parallelAcceleration: request.parallelAcceleration,
+      parallelConcurrency: request.parallelConcurrency,
     });
     const approvedReferenceContinuation = approvedReferenceSelections.get(request.taskId);
     const continuation =
@@ -437,6 +518,9 @@ function createRuyiRuntime({
         ? currentTranslation.partialTranslation
         : "",
       result: null,
+      parallelProgress: continuation
+        ? currentTranslation.parallelProgress
+        : null,
     });
     return { inputs, task, continuation };
   }
@@ -1018,6 +1102,57 @@ function createRuyiRuntime({
     return serviceConfigurationsState(settings);
   }
 
+  async function clearServicePerformanceData(configurationId) {
+    const settings = readSettings();
+    const configuration = findConfiguration(settings, configurationId);
+    if (!configuration) {
+      throw configurationError(null, "服务配置不存在。");
+    }
+    configuration.performanceSamples = [];
+    plainStorage.setItem(SETTINGS_KEY, settings);
+    return serviceConfigurationsState(settings);
+  }
+
+  function getParallelAccelerationAdvice(sourceText, configurationId) {
+    const settings = readSettings();
+    const configuration = findConfiguration(
+      settings,
+      typeof configurationId === "string"
+        ? configurationId
+        : settings.currentServiceConfigurationId,
+    );
+    const summary = configuration
+      ? serviceConfigurationView(configuration, apiKeyFor(configuration.id))
+          .performanceSummary
+      : null;
+    return parallelAccelerationAdvice({
+      sourceCodePoints:
+        typeof sourceText === "string"
+          ? inspectSourceText(sourceText).normalizedCodePointCount
+          : 0,
+      performanceSummary: summary,
+    });
+  }
+
+  function recordPerformanceSample(configurationId, sample) {
+    const settings = readSettings();
+    const configuration = findConfiguration(settings, configurationId);
+    if (!configuration) return;
+    const samples = Array.isArray(configuration.performanceSamples)
+      ? configuration.performanceSamples
+      : [];
+    samples.push({
+      firstOutputMilliseconds: sample.firstOutputMilliseconds,
+      completionMilliseconds: sample.completionMilliseconds,
+      outputCodePoints: sample.outputCodePoints,
+      averageOutputCodePointsPerSecond: sample.averageOutputCodePointsPerSecond,
+      mode: sample.mode,
+      segmentCount: sample.segmentCount,
+    });
+    configuration.performanceSamples = samples.slice(-10);
+    plainStorage.setItem(SETTINGS_KEY, settings);
+  }
+
   function cancelServiceOperationsForConfiguration(configurationId) {
     for (const operation of serviceOperations.values()) {
       if (operation.configurationId === configurationId) {
@@ -1139,6 +1274,7 @@ function createRuyiRuntime({
     );
     copy.cachedModels = [];
     copy.modelsFetchedAt = null;
+    copy.performanceSamples = [];
     delete copy.confirmedTranslationUrl;
     configurations.push(copy);
     settings.currentServiceConfigurationId = copy.id;
@@ -1421,6 +1557,22 @@ function createRuyiRuntime({
     }
 
     if (
+      request.parallelAcceleration &&
+      request.parallelConcurrency !== undefined &&
+      (!Number.isInteger(request.parallelConcurrency) ||
+        request.parallelConcurrency < 1 ||
+        request.parallelConcurrency > 6)
+    ) {
+      return {
+        status: "validation_error",
+        reason: "invalid_parallel_configuration",
+        field: "parallelConcurrency",
+        message: "并发数必须是 1 至 6 的整数。",
+        sourceRetained: true,
+      };
+    }
+
+    if (
       request.referenceTranslationIds !== undefined &&
       request.referenceTranslationIds !== null &&
       !Array.isArray(request.referenceTranslationIds)
@@ -1516,6 +1668,12 @@ function createRuyiRuntime({
       return result;
     }
     const { input, terminologyResolution } = terminologyPreparation;
+    const translationPlan = submittedInputs.parallelAcceleration
+      ? createTranslationPlan(request.sourceText)
+      : null;
+    const parallel = translationPlan
+      ? parallelSummaryFor(submittedInputs, translationPlan)
+      : null;
 
     preparingTaskIds.add(request.taskId);
     let state;
@@ -1646,7 +1804,8 @@ function createRuyiRuntime({
               ...(input.referenceTranslations.length > 0 ? ["参考译例"] : []),
               "附加翻译要求",
             ],
-            callCount: 1,
+            callCount: parallel && parallel.applied ? parallel.segmentCount : 1,
+            ...(parallel ? { parallel } : {}),
           },
         };
         storeCurrentResult(
@@ -1677,15 +1836,75 @@ function createRuyiRuntime({
         // Progress observers are presentation concerns and must not break a request.
       }
     }
-    let protocolOperation;
-    try {
-      protocolOperation = createTranslationProtocolOperation({
+
+    const startedAt = now().getTime();
+    let firstOutputAt = null;
+    let fullDocumentOperation = null;
+    let segmentOperations = null;
+    let segmentMergeRisks = [];
+    let taskTimedOut = false;
+    let taskTimeout = null;
+    function noteFirstOutput(delta) {
+      if (firstOutputAt === null && typeof delta === "string" && delta.length > 0) {
+        firstOutputAt = now().getTime();
+      }
+    }
+    function createOperation(operationInput, onTextDelta) {
+      const operation = createTranslationProtocolOperation({
         configuration,
-        input,
-        onTextDelta(delta) {
-          if (activeTask !== task || controller.signal.aborted) {
+        input: operationInput,
+        onTextDelta,
+      });
+      validateTranslationInputBudget({
+        input: operationInput,
+        serializedBody: operation.body,
+      });
+      return operation;
+    }
+    async function sendOperation(operation, signal) {
+      let sawData = false;
+      const response = await transport.request({
+        url: normalizedTranslationUrl,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          ...(configuration.authentication === "bearer"
+            ? { Authorization: `Bearer ${apiKey}` }
+            : {}),
+        },
+        body: operation.body,
+        signal,
+        onData(chunk) {
+          if (activeTask !== task || signal.aborted || controller.signal.aborted) {
             return;
           }
+          sawData = true;
+          operation.push(chunk);
+        },
+      });
+      if (activeTask !== task || signal.aborted || controller.signal.aborted) {
+        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
+      }
+      if (response.status < 200 || response.status >= 300) {
+        throw transportResponseError(response);
+      }
+      const translation = operation.finish(response.body, sawData);
+      noteFirstOutput(translation);
+      return translation;
+    }
+
+    try {
+      if (parallel && parallel.applied) {
+        segmentOperations = new Map(
+          translationPlan.segments.map((segment) => [
+            segment.id,
+            createOperation(segmentTranslationInput(input, segment), noteFirstOutput),
+          ]),
+        );
+      } else {
+        fullDocumentOperation = createOperation(input, (delta) => {
+          if (activeTask !== task || controller.signal.aborted) return;
+          noteFirstOutput(delta);
           emitProgress({ type: "text_delta", taskId: request.taskId, delta });
           const currentPartial =
             currentTranslation && currentTranslation.task.taskId === request.taskId
@@ -1695,16 +1914,10 @@ function createRuyiRuntime({
             phase: "translating",
             partialTranslation: currentPartial + delta,
           });
-        },
-      });
-      validateTranslationInputBudget({
-        input,
-        serializedBody: protocolOperation.body,
-      });
-    } catch (error) {
-      if (activeTask === task) {
-        activeTask = null;
+        });
       }
+    } catch (error) {
+      if (activeTask === task) activeTask = null;
       if (
         error &&
         [
@@ -1730,6 +1943,7 @@ function createRuyiRuntime({
         status: "failed",
         taskId: request.taskId,
         sourceRetained: true,
+        ...(parallel ? { parallel } : {}),
         error: {
           code: "configuration_error",
           message: errorMessage("configuration_error"),
@@ -1738,59 +1952,120 @@ function createRuyiRuntime({
       storeCurrentResult(request.taskId, result, "failed");
       return result;
     }
+
+    taskTimeout = setTimeout(() => {
+      if (activeTask !== task) return;
+      taskTimedOut = true;
+      controller.abort();
+    }, TRANSLATION_TOTAL_TIMEOUT_MILLISECONDS);
     emitProgress({ type: "started", taskId: request.taskId });
-    updateCurrentTask(request.taskId, { phase: "translating" });
+    if (parallel) {
+      emitProgress({ type: "parallel_plan", taskId: request.taskId, parallel });
+    }
+    const initialParallelProgress = parallel
+      ? {
+          completed: 0,
+          total: parallel.segmentCount,
+          inFlight: 0,
+          concurrency: parallel.concurrency,
+          fallbackReason: parallel.fallbackReason,
+        }
+      : null;
+    updateCurrentTask(request.taskId, {
+      phase: "translating",
+      parallelProgress: initialParallelProgress,
+    });
 
     try {
-      let sawData = false;
-      const response = await transport.request({
-        url: normalizedTranslationUrl,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          ...(configuration.authentication === "bearer"
-            ? { Authorization: `Bearer ${apiKey}` }
-            : {}),
-        },
-        body: protocolOperation.body,
-        signal: controller.signal,
-        onData(chunk) {
-          if (activeTask !== task || controller.signal.aborted) {
-            return;
-          }
-          sawData = true;
-          protocolOperation.push(chunk);
-        },
-      });
-
-      if (activeTask !== task || controller.signal.aborted) {
-        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
-      }
-
-      if (response.status !== 200) {
-        const code = mapHttpError(response.status);
-        const requestId = response.headers && response.headers["x-request-id"];
-        emitProgress({
-          type: "finished",
-          taskId: request.taskId,
-          status: "failed",
-        });
-        const result = {
-          status: "failed",
-          taskId: request.taskId,
-          sourceRetained: true,
-          error: {
-            code,
-            message: errorMessage(code),
-            httpStatus: response.status,
-            ...(typeof requestId === "string" ? { requestId } : {}),
+      let translation;
+      if (parallel && parallel.applied) {
+        const output = createOutputAccumulator();
+        const completedByOrdinal = new Map();
+        let nextPublishedOrdinal = 0;
+        const segmentResults = await runSegmentPool({
+          segments: translationPlan.segments,
+          concurrency: parallel.concurrency,
+          signal: controller.signal,
+          async translate(segment, { signal }) {
+            const operation = segmentOperations.get(segment.id);
+            try {
+              const segmentTranslation = await sendOperation(operation, signal);
+              return {
+                id: segment.id,
+                ordinal: segment.ordinal,
+                sourceStart: segment.sourceStart,
+                sourceEnd: segment.sourceEnd,
+                translation: segmentTranslation,
+              };
+            } catch (error) {
+              const partial = operation.partialTranslation();
+              if (partial) {
+                error.partialSegmentResult = {
+                  id: segment.id,
+                  ordinal: segment.ordinal,
+                  sourceStart: segment.sourceStart,
+                  sourceEnd: segment.sourceEnd,
+                  translation: partial,
+                };
+              }
+              throw error;
+            }
           },
-        };
-        storeCurrentResult(request.taskId, result, "failed");
-        return result;
+          onSegmentStarted(_segment, progress) {
+            const parallelProgress = {
+              ...progress,
+              concurrency: parallel.concurrency,
+              fallbackReason: parallel.fallbackReason,
+            };
+            emitProgress({
+              type: "segment_progress",
+              taskId: request.taskId,
+              completed: progress.completed,
+              total: progress.total,
+              inFlight: progress.inFlight,
+              concurrency: parallel.concurrency,
+            });
+            updateCurrentTask(request.taskId, { parallelProgress });
+          },
+          onSegmentCompleted(result, progress) {
+            completedByOrdinal.set(result.ordinal, result.translation);
+            while (completedByOrdinal.has(nextPublishedOrdinal)) {
+              const delta = completedByOrdinal.get(nextPublishedOrdinal);
+              if (!output.append(delta)) {
+                throw Object.assign(new Error(errorMessage("response_too_large")), {
+                  code: "response_too_large",
+                  partialTranslation: output.text(),
+                });
+              }
+              emitProgress({ type: "text_delta", taskId: request.taskId, delta });
+              nextPublishedOrdinal += 1;
+            }
+            const parallelProgress = {
+              ...progress,
+              concurrency: parallel.concurrency,
+              fallbackReason: parallel.fallbackReason,
+            };
+            emitProgress({
+              type: "segment_progress",
+              taskId: request.taskId,
+              completed: progress.completed,
+              total: progress.total,
+              inFlight: progress.inFlight,
+              concurrency: parallel.concurrency,
+            });
+            updateCurrentTask(request.taskId, {
+              partialTranslation: output.text(),
+              parallelProgress,
+            });
+          },
+        });
+        const merged = mergeSegmentTranslations(translationPlan.segments, segmentResults);
+        translation = merged.translation;
+        segmentMergeRisks = [...merged.risks];
+      } else {
+        translation = await sendOperation(fullDocumentOperation, controller.signal);
       }
 
-      const translation = protocolOperation.finish(response.body, sawData);
       const quality = inspectTranslationQuality({
         sourceText: request.sourceText,
         translation,
@@ -1800,12 +2075,14 @@ function createRuyiRuntime({
         translation,
         matchedTerms: terminologyResolution.qualityTerms,
       });
-      const terminologyPasteBlocked = terminologyRisks.some(
-        (risk) => risk.certainty === "deterministic" && risk.severity === "critical",
-      );
+      const allRisks = [...quality.risks, ...terminologyRisks, ...segmentMergeRisks];
       const combinedQuality = freezeDeep({
-        risks: [...quality.risks, ...terminologyRisks],
-        pasteBlocked: quality.pasteBlocked || terminologyPasteBlocked,
+        risks: allRisks,
+        pasteBlocked:
+          quality.pasteBlocked ||
+          allRisks.some(
+            (risk) => risk.certainty === "deterministic" && risk.severity === "critical",
+          ),
       });
       currentCopyCandidate = {
         taskId: request.taskId,
@@ -1813,6 +2090,32 @@ function createRuyiRuntime({
         translation,
         pasteBlocked: combinedQuality.pasteBlocked,
       };
+      const completedAt = now().getTime();
+      const completionMilliseconds = Math.max(1, completedAt - startedAt);
+      const outputCodePoints = countCodePoints(translation);
+      recordPerformanceSample(configuration.id, {
+        firstOutputMilliseconds: Math.max(
+          0,
+          (firstOutputAt === null ? completedAt : firstOutputAt) - startedAt,
+        ),
+        completionMilliseconds,
+        outputCodePoints,
+        averageOutputCodePointsPerSecond:
+          outputCodePoints / (completionMilliseconds / 1_000),
+        mode: parallel && parallel.applied ? "parallel" : "full_document",
+        segmentCount: parallel && parallel.applied ? parallel.segmentCount : 1,
+      });
+      if (parallel) {
+        updateCurrentTask(request.taskId, {
+          parallelProgress: {
+            completed: parallel.segmentCount,
+            total: parallel.segmentCount,
+            inFlight: 0,
+            concurrency: parallel.concurrency,
+            fallbackReason: parallel.fallbackReason,
+          },
+        });
+      }
       emitProgress({
         type: "finished",
         taskId: request.taskId,
@@ -1823,31 +2126,58 @@ function createRuyiRuntime({
         taskId: request.taskId,
         translation,
         quality: combinedQuality,
+        ...(parallel ? { parallel } : {}),
       });
-      storeCurrentResult(
-        request.taskId,
-        result,
-        "completed",
-        translation,
-      );
+      storeCurrentResult(request.taskId, result, "completed", translation);
       return result;
     } catch (error) {
       const code =
-        activeTask !== task || controller.signal.aborted
+        taskTimedOut
+          ? "timeout"
+          : activeTask !== task || controller.signal.aborted
           ? "cancelled"
           : mapTransportError(error);
-      const partialTranslation =
-        error && typeof error.partialTranslation === "string"
-          ? error.partialTranslation
-          : protocolOperation.partialTranslation();
-      const quality =
-        configuration.stream
+      let partialTranslation = "";
+      let incompleteSegmentRisks = [];
+      if (parallel && parallel.applied) {
+        const partialResults = Array.isArray(error && error.segmentResults)
+          ? [...error.segmentResults]
+          : [];
+        if (error && error.partialSegmentResult) {
+          partialResults.push(error.partialSegmentResult);
+        }
+        const partialMerge = mergeSegmentTranslations(
+          translationPlan.segments,
+          partialResults,
+        );
+        partialTranslation =
+          error && typeof error.partialTranslation === "string"
+            ? error.partialTranslation
+            : partialMerge.translation;
+        incompleteSegmentRisks = [...partialMerge.risks];
+      } else {
+        partialTranslation =
+          error && typeof error.partialTranslation === "string"
+            ? error.partialTranslation
+            : fullDocumentOperation
+              ? fullDocumentOperation.partialTranslation()
+              : "";
+      }
+      const baseQuality =
+        configuration.stream || (parallel && parallel.applied)
           ? inspectTranslationQuality({
               sourceText: request.sourceText,
-              translation: partialTranslation || "",
+              translation: partialTranslation,
               streamCompleted: false,
             })
           : null;
+      const quality = baseQuality
+        ? freezeDeep({
+            risks: [...baseQuality.risks, ...incompleteSegmentRisks],
+            pasteBlocked:
+              baseQuality.pasteBlocked || incompleteSegmentRisks.length > 0,
+          })
+        : null;
       if (
         quality &&
         partialTranslation &&
@@ -1862,6 +2192,20 @@ function createRuyiRuntime({
           pasteBlocked: quality.pasteBlocked,
         };
       }
+      if (parallel) {
+        const completed = Array.isArray(error && error.segmentResults)
+          ? error.segmentResults.length
+          : 0;
+        updateCurrentTask(request.taskId, {
+          parallelProgress: {
+            completed,
+            total: parallel.segmentCount,
+            inFlight: 0,
+            concurrency: parallel.concurrency,
+            fallbackReason: parallel.fallbackReason,
+          },
+        });
+      }
       emitProgress({
         type: "finished",
         taskId: request.taskId,
@@ -1873,22 +2217,28 @@ function createRuyiRuntime({
         sourceRetained: true,
         ...(partialTranslation ? { partialTranslation } : {}),
         ...(quality ? { quality } : {}),
+        ...(parallel ? { parallel } : {}),
         error: {
           code,
           message: safeTransportErrorMessage(error, code),
+          ...(error && Number.isInteger(error.httpStatus)
+            ? { httpStatus: error.httpStatus }
+            : {}),
+          ...(error && typeof error.requestId === "string"
+            ? { requestId: error.requestId }
+            : {}),
         },
       });
       storeCurrentResult(
         request.taskId,
         result,
         "failed",
-        partialTranslation || "",
+        partialTranslation,
       );
       return result;
     } finally {
-      if (activeTask === task) {
-        activeTask = null;
-      }
+      if (taskTimeout !== null) clearTimeout(taskTimeout);
+      if (activeTask === task) activeTask = null;
     }
   }
 
@@ -2009,6 +2359,8 @@ function createRuyiRuntime({
     deleteServiceConfiguration,
     saveServiceApiKey,
     deleteServiceApiKey,
+    clearServicePerformanceData,
+    getParallelAccelerationAdvice,
     testServiceConnection,
     fetchServiceModels,
     cancelServiceOperation,

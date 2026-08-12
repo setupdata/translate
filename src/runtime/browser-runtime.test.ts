@@ -31,6 +31,8 @@ describe("getBrowserRuntime", () => {
       deleteServiceConfiguration: vi.fn(),
       saveServiceApiKey: vi.fn(),
       deleteServiceApiKey: vi.fn(),
+      clearServicePerformanceData: vi.fn(),
+      getParallelAccelerationAdvice: vi.fn(),
       testServiceConnection: vi.fn(),
       fetchServiceModels: vi.fn(),
       cancelServiceOperation: vi.fn(),
