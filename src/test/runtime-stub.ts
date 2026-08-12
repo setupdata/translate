@@ -16,6 +16,8 @@ export const configuredRuntimeState: RuntimeConfigurationState = {
     stream: true,
     hasApiKey: true,
     maskedApiKey: "••••••••1234",
+    cachedModels: [],
+    modelsFetchedAt: null,
   },
   defaults: {
     targetLanguage: {
@@ -34,6 +36,46 @@ export function createRuntimeStub(
 ): RuyiRuntimeBridge {
   return {
     getServiceConfiguration: async () => configuredRuntimeState,
+    getServiceConfigurations: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    saveServiceConfiguration: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    duplicateServiceConfiguration: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    moveServiceConfiguration: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    setCurrentServiceConfiguration: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    deleteServiceConfiguration: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    saveServiceApiKey: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    deleteServiceApiKey: async () => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    }),
+    testServiceConnection: async () => ({ status: "completed" }),
+    fetchServiceModels: async () => ({
+      status: "completed",
+      models: [],
+      fetchedAt: new Date(0).toISOString(),
+      currentModelPresent: false,
+    }),
+    cancelServiceOperation: () => undefined,
     saveApiKey: async () => configuredRuntimeState,
     startStandardTranslation: async (request) => ({
       status: "completed",

@@ -1,4 +1,5 @@
 import type { RuyiRuntimeBridge } from "../runtime/contracts";
+import { ServiceSettingsPage } from "../settings/ServiceSettingsPage";
 import { ConfiguredTranslationPage } from "../translation/ConfiguredTranslationPage";
 import type { EntryIntent } from "../utools/entry-intent";
 
@@ -9,12 +10,7 @@ export interface AppProps {
 
 export function App({ intent, runtime }: AppProps) {
   if (intent.page === "settings") {
-    return (
-      <main className="app-shell">
-        <h1>设置</h1>
-        <p>服务配置将在后续工单中提供。</p>
-      </main>
-    );
+    return <ServiceSettingsPage runtime={runtime} />;
   }
 
   return (

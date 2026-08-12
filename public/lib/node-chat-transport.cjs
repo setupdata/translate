@@ -4,6 +4,7 @@ const https = require("https");
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_NO_DATA_TIMEOUT_MILLISECONDS = 60_000;
 const DEFAULT_TOTAL_TIMEOUT_MILLISECONDS = 10 * 60_000;
+const MAX_SAME_ORIGIN_REDIRECTS = 3;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 function selectClient(url) {
@@ -32,13 +33,28 @@ function lifecycleError(code, message) {
   return error;
 }
 
+function isRedirectStatus(status) {
+  return status >= 300 && status < 400;
+}
+
 function createNodeChatTransport({
   maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
   noDataTimeoutMilliseconds = DEFAULT_NO_DATA_TIMEOUT_MILLISECONDS,
   totalTimeoutMilliseconds = DEFAULT_TOTAL_TIMEOUT_MILLISECONDS,
 } = {}) {
-  return Object.freeze({
-    request({ url, method, headers, body, onData, signal }) {
+  function requestOnce({
+      url,
+      method,
+      headers,
+      body = "",
+      onData,
+      signal,
+      maxResponseBytes: requestMaxResponseBytes = maxResponseBytes,
+      noDataTimeoutMilliseconds: requestNoDataTimeoutMilliseconds =
+        noDataTimeoutMilliseconds,
+      totalTimeoutMilliseconds: requestTotalTimeoutMilliseconds =
+        totalTimeoutMilliseconds,
+    }) {
       return new Promise((resolve, reject) => {
         if (signal && signal.aborted) {
           reject(lifecycleError("cancelled", "请求已取消。"));
@@ -55,7 +71,9 @@ function createNodeChatTransport({
           return;
         }
 
-        const encodedBody = Buffer.from(body, "utf8");
+        const hasBody =
+          method !== "GET" && method !== "HEAD" && typeof body === "string";
+        const encodedBody = hasBody ? Buffer.from(body, "utf8") : null;
         let request;
         let response;
         let settled = false;
@@ -110,8 +128,8 @@ function createNodeChatTransport({
             clearTimeout(noDataTimer);
           }
           noDataTimer = setTimeout(() => {
-            finishError(lifecycleError("timeout", "模型服务连续 60 秒没有返回数据。"));
-          }, noDataTimeoutMilliseconds);
+            finishError(lifecycleError("timeout", "模型服务连续一段时间没有返回数据。"));
+          }, requestNoDataTimeoutMilliseconds);
         }
 
         function handleAbort() {
@@ -125,7 +143,9 @@ function createNodeChatTransport({
               method,
               headers: {
                 ...headers,
-                "Content-Length": encodedBody.byteLength,
+                ...(encodedBody
+                  ? { "Content-Length": encodedBody.byteLength }
+                  : {}),
               },
             },
             (incomingResponse) => {
@@ -136,7 +156,7 @@ function createNodeChatTransport({
                 }
                 restartNoDataTimer();
                 responseBytes += chunk.length;
-                if (responseBytes > maxResponseBytes) {
+                if (responseBytes > requestMaxResponseBytes) {
                   finishError(
                     lifecycleError(
                       "response_too_large",
@@ -202,15 +222,75 @@ function createNodeChatTransport({
         }
         restartNoDataTimer();
         totalTimer = setTimeout(() => {
-          finishError(lifecycleError("timeout", "模型服务请求超过 10 分钟。"));
-        }, totalTimeoutMilliseconds);
+          finishError(lifecycleError("timeout", "模型服务请求超过总时限。"));
+        }, requestTotalTimeoutMilliseconds);
         try {
-          request.end(encodedBody);
+          request.end(encodedBody || undefined);
         } catch (error) {
           finishError(error);
         }
       });
-    },
+  }
+
+  async function requestWithRedirects(
+    options,
+    redirectCount = 0,
+    initialOrigin = null,
+    totalDeadline = null,
+  ) {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(options.url);
+      selectClient(parsedUrl);
+    } catch (error) {
+      throw error;
+    }
+    const allowedOrigin = initialOrigin || parsedUrl.origin;
+    const configuredTotalTimeout =
+      options.totalTimeoutMilliseconds ?? totalTimeoutMilliseconds;
+    const deadline = totalDeadline ?? Date.now() + configuredTotalTimeout;
+    const remainingMilliseconds = deadline - Date.now();
+    if (remainingMilliseconds <= 0) {
+      throw lifecycleError("timeout", "模型服务请求超过总时限。");
+    }
+
+    const response = await requestOnce({
+      ...options,
+      totalTimeoutMilliseconds: remainingMilliseconds,
+    });
+    const location = response.headers && response.headers.location;
+    if (!isRedirectStatus(response.status) || typeof location !== "string") {
+      return response;
+    }
+    if (redirectCount >= MAX_SAME_ORIGIN_REDIRECTS) {
+      throw lifecycleError("request_rejected", "模型服务重定向次数超过限制。");
+    }
+
+    let redirectedUrl;
+    try {
+      redirectedUrl = new URL(location, parsedUrl);
+      selectClient(redirectedUrl);
+    } catch (error) {
+      throw error;
+    }
+    if (redirectedUrl.origin !== allowedOrigin) {
+      const error = lifecycleError(
+        "request_rejected",
+        `模型服务尝试重定向到不同来源：${redirectedUrl.origin}`,
+      );
+      error.redirectOrigin = redirectedUrl.origin;
+      throw error;
+    }
+    return requestWithRedirects(
+      { ...options, url: redirectedUrl.toString() },
+      redirectCount + 1,
+      allowedOrigin,
+      deadline,
+    );
+  }
+
+  return Object.freeze({
+    request: requestWithRedirects,
   });
 }
 

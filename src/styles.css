@@ -69,6 +69,17 @@ textarea,
   box-shadow: 0 12px 36px rgb(51 36 67 / 8%);
 }
 
+input:not([type="checkbox"]),
+select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #d7cde2;
+  border-radius: 10px;
+  color: inherit;
+  background: rgb(255 255 255 / 82%);
+}
+
 textarea {
   resize: vertical;
 }
@@ -166,6 +177,80 @@ button:disabled {
   gap: 10px;
 }
 
+.settings-page section {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-heading-row,
+.service-configuration-card,
+.compact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-heading-row,
+.service-configuration-card {
+  justify-content: space-between;
+}
+
+.settings-heading-row h2,
+.settings-heading-row p,
+.service-configuration-card h3,
+.service-configuration-card p,
+.service-request-tools p {
+  margin: 0;
+}
+
+.service-configuration-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.service-configuration-card {
+  padding: 16px;
+  border: 1px solid #d7cde2;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 72%);
+}
+
+.service-configuration-card > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.service-configuration-card strong {
+  color: #63407f;
+}
+
+.compact-actions {
+  justify-content: flex-end;
+}
+
+.compact-actions button {
+  min-width: auto;
+  padding: 8px 12px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.service-request-tools {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #d7cde2;
+  border-radius: 12px;
+}
+
 .translation-actions {
   display: flex;
   flex-wrap: wrap;
@@ -243,6 +328,8 @@ button:disabled {
   }
 
   textarea,
+  input:not([type="checkbox"]),
+  select,
   [id="target-language"],
   [type="password"],
   [aria-label="译文"],
@@ -259,6 +346,8 @@ button:disabled {
 
   .configuration-card,
   .confirmation-card,
+  .service-configuration-card,
+  .service-request-tools,
   .quality-risks,
   .translation-live-text {
     border-color: #4b4058;

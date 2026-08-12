@@ -5,6 +5,7 @@ import type {
   CurrentTranslationSnapshot,
   RuntimeConfigurationState,
   RuyiRuntimeBridge,
+  ServiceConfigurationView,
   StandardTranslationResult,
   TaskTerm,
   TargetLanguage,
@@ -71,6 +72,9 @@ export function ConfiguredTranslationPage({
   const [taskTerms, setTaskTerms] = useState<TaskTerm[]>([]);
   const [configuration, setConfiguration] =
     useState<RuntimeConfigurationState | null>(null);
+  const [serviceConfigurations, setServiceConfigurations] = useState<
+    ServiceConfigurationView[]
+  >([]);
   const [result, setResult] = useState<StandardTranslationResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [partialTranslation, setPartialTranslation] = useState("");
@@ -81,6 +85,7 @@ export function ConfiguredTranslationPage({
   const taskId = useRef(createTaskId());
   const requestGeneration = useRef(0);
   const deferredActionGeneration = useRef(0);
+  const serviceSelectionGeneration = useRef(0);
   const hasAutoStarted = useRef(false);
   const mounted = useRef(true);
   const riskCopyTrigger = useRef<HTMLButtonElement | null>(null);
@@ -122,11 +127,12 @@ export function ConfiguredTranslationPage({
       source = sourceText,
       language = targetLanguage,
       requirements = additionalRequirements,
+      serviceConfigurationId = configuration?.serviceConfiguration?.id ?? null,
     ): CurrentTranslationInputs =>
       buildCurrentInputs(
         source,
         language,
-        configuration?.serviceConfiguration?.id ?? null,
+        serviceConfigurationId,
         requirements,
         taskTerms,
       ),
@@ -245,6 +251,7 @@ export function ConfiguredTranslationPage({
   useEffect(() => {
     let active = true;
     const deferredGeneration = deferredActionGeneration.current;
+    const selectionGeneration = serviceSelectionGeneration.current;
     const shouldAutoStart = autoStart && !hasAutoStarted.current;
     const previousInputs = runtime.getCurrentTranslation()?.inputs ?? null;
     if (shouldAutoStart) {
@@ -274,7 +281,10 @@ export function ConfiguredTranslationPage({
     void runtime
       .getServiceConfiguration()
       .then(async (state) => {
-        if (!active) {
+        if (
+          !active ||
+          selectionGeneration !== serviceSelectionGeneration.current
+        ) {
           return;
         }
         setConfiguration(state);
@@ -320,6 +330,14 @@ export function ConfiguredTranslationPage({
         ) {
           setErrorMessage("无法读取服务配置。");
         }
+      });
+    void runtime
+      .getServiceConfigurations()
+      .then((serviceState) => {
+        if (active) setServiceConfigurations(serviceState.serviceConfigurations);
+      })
+      .catch(() => {
+        if (active) setErrorMessage("无法读取服务配置列表。");
       });
 
     return () => {
@@ -396,6 +414,61 @@ export function ConfiguredTranslationPage({
           }
         }}
       >
+        {serviceConfigurations.length > 0 && (
+          <>
+            <label htmlFor="service-configuration">服务配置</label>
+            <select
+              id="service-configuration"
+              value={configuration?.serviceConfiguration?.id ?? ""}
+              onChange={(event) => {
+                const configurationId = event.target.value;
+                if (result?.status === "confirmation_required") {
+                  runtime.cancelTranslation(taskId.current);
+                  setResult(null);
+                }
+                deferredActionGeneration.current += 1;
+                const selectionGeneration = ++serviceSelectionGeneration.current;
+                void runtime
+                  .setCurrentServiceConfiguration(configurationId)
+                  .then((serviceState) => {
+                    setServiceConfigurations(serviceState.serviceConfigurations);
+                    return runtime.getServiceConfiguration(configurationId);
+                  })
+                  .then((selectedConfiguration) => {
+                    if (
+                      !mounted.current ||
+                      selectionGeneration !== serviceSelectionGeneration.current
+                    ) {
+                      return;
+                    }
+                    setConfiguration(selectedConfiguration);
+                    publishInputs(
+                      currentInputs(
+                        sourceText,
+                        targetLanguage,
+                        additionalRequirements,
+                        configurationId,
+                      ),
+                    );
+                  })
+                  .catch(() => {
+                    if (
+                      mounted.current &&
+                      selectionGeneration === serviceSelectionGeneration.current
+                    ) {
+                      setErrorMessage("服务配置切换失败。");
+                    }
+                  });
+              }}
+            >
+              {serviceConfigurations.map((service) => (
+                <option key={service.id} value={service.id}>
+                  {service.name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <label htmlFor="source-text">源文本</label>
         <textarea
           id="source-text"

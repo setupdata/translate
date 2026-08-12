@@ -61,6 +61,8 @@ describe("Ruyi runtime", () => {
         stream: true,
         hasApiKey: false,
         maskedApiKey: null,
+        cachedModels: [],
+        modelsFetchedAt: null,
       },
       defaults: {
         targetLanguage: {

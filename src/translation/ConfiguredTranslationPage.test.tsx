@@ -25,6 +25,8 @@ const missingKeyService: ServiceConfigurationView = {
   stream: true,
   hasApiKey: false,
   maskedApiKey: null,
+  cachedModels: [],
+  modelsFetchedAt: null,
 };
 
 function currentTranslationMethods(staleOnUpdate = false): Pick<
@@ -33,7 +35,22 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
   | "updateCurrentTranslationInputs"
   | "subscribeCurrentTranslation"
   | "clearCurrentTranslation"
+  | "getServiceConfigurations"
+  | "saveServiceConfiguration"
+  | "duplicateServiceConfiguration"
+  | "moveServiceConfiguration"
+  | "setCurrentServiceConfiguration"
+  | "deleteServiceConfiguration"
+  | "saveServiceApiKey"
+  | "deleteServiceApiKey"
+  | "testServiceConnection"
+  | "fetchServiceModels"
+  | "cancelServiceOperation"
 > {
+  const configurationsState = () => ({
+    currentServiceConfigurationId: missingKeyService.id,
+    serviceConfigurations: [missingKeyService],
+  });
   return {
     getCurrentTranslation: () => null,
     updateCurrentTranslationInputs: (inputs: CurrentTranslationInputs) =>
@@ -48,6 +65,22 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
       }) satisfies CurrentTranslationSnapshot,
     subscribeCurrentTranslation: () => () => undefined,
     clearCurrentTranslation: vi.fn(),
+    getServiceConfigurations: vi.fn(async () => configurationsState()),
+    saveServiceConfiguration: vi.fn(async () => configurationsState()),
+    duplicateServiceConfiguration: vi.fn(async () => configurationsState()),
+    moveServiceConfiguration: vi.fn(async () => configurationsState()),
+    setCurrentServiceConfiguration: vi.fn(async () => configurationsState()),
+    deleteServiceConfiguration: vi.fn(async () => configurationsState()),
+    saveServiceApiKey: vi.fn(async () => configurationsState()),
+    deleteServiceApiKey: vi.fn(async () => configurationsState()),
+    testServiceConnection: vi.fn(async () => ({ status: "completed" as const })),
+    fetchServiceModels: vi.fn(async () => ({
+      status: "completed" as const,
+      models: [],
+      fetchedAt: new Date(0).toISOString(),
+      currentModelPresent: false,
+    })),
+    cancelServiceOperation: vi.fn(),
   };
 }
 
@@ -533,6 +566,187 @@ describe("ConfiguredTranslationPage", () => {
         additionalRequirements: "Use concise wording.",
       }),
     );
+  });
+
+  it("switches the current service without automatically translating", async () => {
+    const user = userEvent.setup();
+    const runtime = createRuntimeForBoundary(true);
+    const customService: ServiceConfigurationView = {
+      ...missingKeyService,
+      id: "custom-service",
+      name: "Custom service",
+      type: "custom",
+      authentication: "none",
+      model: "custom-model",
+      hasApiKey: false,
+      maskedApiKey: null,
+    };
+    runtime.getServiceConfigurations = vi.fn().mockResolvedValue({
+      currentServiceConfigurationId: missingKeyService.id,
+      serviceConfigurations: [missingKeyService, customService],
+    });
+    runtime.setCurrentServiceConfiguration = vi.fn().mockResolvedValue({
+      currentServiceConfigurationId: customService.id,
+      serviceConfigurations: [missingKeyService, customService],
+    });
+    runtime.getServiceConfiguration = vi.fn(async (configurationId?: string) => ({
+      ...missingKeyState,
+      serviceConfiguration:
+        configurationId === customService.id ? customService : missingKeyService,
+    }));
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-service-stale",
+      translation: "旧译文",
+      quality: { risks: [], pasteBlocked: false },
+    });
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+    expect(await screen.findByRole("region", { name: "译文" })).toHaveTextContent(
+      "旧译文",
+    );
+    vi.mocked(runtime.startStandardTranslation).mockClear();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "服务配置" }),
+      customService.id,
+    );
+
+    await waitFor(() =>
+      expect(runtime.setCurrentServiceConfiguration).toHaveBeenCalledWith(
+        customService.id,
+      ),
+    );
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "译文" })).toHaveTextContent("旧译文");
+    expect(screen.getByRole("button", { name: "复制译文" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
+  });
+
+  it("does not let a delayed initial configuration overwrite a later service selection", async () => {
+    const user = userEvent.setup();
+    let resolveInitialConfiguration: (state: RuntimeConfigurationState) => void = () =>
+      undefined;
+    const initialConfiguration = new Promise<RuntimeConfigurationState>((resolve) => {
+      resolveInitialConfiguration = resolve;
+    });
+    const customService: ServiceConfigurationView = {
+      ...missingKeyService,
+      id: "custom-latest",
+      name: "Custom latest",
+      type: "custom",
+      authentication: "none",
+      model: "custom-model",
+      hasApiKey: false,
+      maskedApiKey: null,
+    };
+    const selectedState: RuntimeConfigurationState = {
+      ...missingKeyState,
+      serviceConfiguration: customService,
+    };
+    const runtime = createRuntimeForBoundary();
+    runtime.getServiceConfigurations = vi.fn().mockResolvedValue({
+      currentServiceConfigurationId: missingKeyService.id,
+      serviceConfigurations: [missingKeyService, customService],
+    });
+    runtime.setCurrentServiceConfiguration = vi.fn().mockResolvedValue({
+      currentServiceConfigurationId: customService.id,
+      serviceConfigurations: [missingKeyService, customService],
+    });
+    runtime.getServiceConfiguration = vi.fn((configurationId?: string) =>
+      configurationId === customService.id
+        ? Promise.resolve(selectedState)
+        : initialConfiguration,
+    );
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    const selector = await screen.findByRole("combobox", { name: "服务配置" });
+    await user.selectOptions(selector, customService.id);
+    await waitFor(() => expect(selector).toHaveValue(customService.id));
+
+    resolveInitialConfiguration(missingKeyState);
+
+    await waitFor(() => expect(runtime.getServiceConfiguration).toHaveBeenCalledTimes(2));
+    expect(selector).toHaveValue(customService.id);
+  });
+
+  it("dismisses an old send confirmation when the service changes", async () => {
+    const user = userEvent.setup();
+    const configuredOfficial = {
+      ...missingKeyService,
+      hasApiKey: true,
+      maskedApiKey: "••••••••1234",
+    };
+    const customService: ServiceConfigurationView = {
+      ...missingKeyService,
+      id: "custom-confirmation",
+      name: "Custom confirmation",
+      type: "custom",
+      authentication: "none",
+      model: "custom-model",
+      hasApiKey: false,
+      maskedApiKey: null,
+    };
+    const runtime = createRuntimeForBoundary();
+    runtime.getServiceConfigurations = vi.fn().mockResolvedValue({
+      currentServiceConfigurationId: configuredOfficial.id,
+      serviceConfigurations: [configuredOfficial, customService],
+    });
+    runtime.setCurrentServiceConfiguration = vi.fn().mockResolvedValue({
+      currentServiceConfigurationId: customService.id,
+      serviceConfigurations: [configuredOfficial, customService],
+    });
+    runtime.getServiceConfiguration = vi.fn(async (configurationId?: string) => ({
+      ...missingKeyState,
+      serviceConfiguration:
+        configurationId === customService.id ? customService : configuredOfficial,
+    }));
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "confirmation_required",
+      sourceRetained: true,
+      confirmationToken: "confirmation-old-service",
+      preview: {
+        serviceName: configuredOfficial.name,
+        normalizedTranslationUrl: configuredOfficial.translationUrl,
+        protocol: "Chat Completions",
+        model: configuredOfficial.model,
+        dataSent: ["源文本"],
+        callCount: 1,
+      },
+    });
+
+    render(
+      <ConfiguredTranslationPage autoStart initialText="source" runtime={runtime} />,
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "确认发送翻译数据" }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "服务配置" }),
+      customService.id,
+    );
+
+    await waitFor(() =>
+      expect(runtime.setCurrentServiceConfiguration).toHaveBeenCalledWith(customService.id),
+    );
+    expect(runtime.cancelTranslation).toHaveBeenCalledWith(expect.any(String));
+    expect(
+      screen.queryByRole("dialog", { name: "确认发送翻译数据" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the stale result when edited source text cannot start a new request", async () => {

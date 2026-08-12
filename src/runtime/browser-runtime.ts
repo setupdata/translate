@@ -6,6 +6,17 @@ function unavailableRuntime(): RuyiRuntimeBridge {
 
   return Object.freeze({
     getServiceConfiguration: unavailable,
+    getServiceConfigurations: unavailable,
+    saveServiceConfiguration: unavailable,
+    duplicateServiceConfiguration: unavailable,
+    moveServiceConfiguration: unavailable,
+    setCurrentServiceConfiguration: unavailable,
+    deleteServiceConfiguration: unavailable,
+    saveServiceApiKey: unavailable,
+    deleteServiceApiKey: unavailable,
+    testServiceConnection: unavailable,
+    fetchServiceModels: unavailable,
+    cancelServiceOperation: () => undefined,
     saveApiKey: unavailable,
     startStandardTranslation: unavailable,
     cancelTranslation: () => undefined,

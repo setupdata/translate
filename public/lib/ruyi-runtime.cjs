@@ -9,18 +9,22 @@ const {
 const {
   createTranslationProtocolOperation,
 } = require("./translation-protocol.cjs");
+const {
+  DEEPSEEK_FLASH_PRESET,
+  configurationError,
+  normalizeServiceUrl,
+  parseModelIds,
+  serviceConfigurationView,
+  uniqueCopyName,
+  validateServiceConfiguration,
+} = require("./service-configurations.cjs");
 
-const DEEPSEEK_FLASH_PRESET = Object.freeze({
-  id: "deepseek-flash",
-  name: "DeepSeek Flash",
-  type: "deepseek-official",
-  protocol: "chat-completions",
-  translationUrl: "https://api.deepseek.com/chat/completions",
-  modelListUrl: "https://api.deepseek.com/models",
-  authentication: "bearer",
-  model: "deepseek-v4-flash",
-  stream: true,
-});
+const CONNECTION_TEST_SOURCE_TEXT = "Connection test";
+const CONNECTION_TEST_MAX_RESPONSE_BYTES = 1024 * 1024;
+const CONNECTION_TEST_NO_DATA_TIMEOUT_MILLISECONDS = 30_000;
+const CONNECTION_TEST_TOTAL_TIMEOUT_MILLISECONDS = 120_000;
+const MODEL_LIST_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MODEL_LIST_TOTAL_TIMEOUT_MILLISECONDS = 30_000;
 
 const DEFAULTS = Object.freeze({
   targetLanguage: Object.freeze({
@@ -34,10 +38,15 @@ const DEFAULTS = Object.freeze({
 });
 
 function createInitialSettings(servicePreset = DEEPSEEK_FLASH_PRESET) {
+  const initialConfiguration = {
+    cachedModels: [],
+    modelsFetchedAt: null,
+    ...servicePreset,
+  };
   return {
     version: 1,
-    currentServiceConfigurationId: servicePreset.id,
-    serviceConfigurations: [{ ...servicePreset }],
+    currentServiceConfigurationId: initialConfiguration.id,
+    serviceConfigurations: [initialConfiguration],
     defaults: {
       targetLanguage: { ...DEFAULTS.targetLanguage },
       qualityMode: DEFAULTS.qualityMode,
@@ -99,6 +108,22 @@ function errorMessage(code) {
     unknown_error: "翻译请求失败。",
   };
   return messages[code] || messages.unknown_error;
+}
+
+function safeTransportErrorMessage(error, code) {
+  if (
+    code === "request_rejected" &&
+    error &&
+    typeof error.redirectOrigin === "string"
+  ) {
+    try {
+      const destination = new URL(error.redirectOrigin).host;
+      return `模型服务尝试重定向到不同来源 ${destination}，请求已停止。`;
+    } catch {
+      // Fall back to the stable message when the transport detail is malformed.
+    }
+  }
+  return errorMessage(code);
 }
 
 function mapHttpError(status) {
@@ -230,12 +255,15 @@ function createRuyiRuntime({
   transport,
   servicePreset = DEEPSEEK_FLASH_PRESET,
   tokenFactory = () => randomBytes(24).toString("hex"),
+  configurationIdFactory = () => `service-${randomBytes(12).toString("hex")}`,
+  now = () => new Date(),
   hostActions = {},
 }) {
   const pendingConfirmations = new Map();
   const preparingTaskIds = new Set();
   const cancelledPreparingTaskIds = new Set();
   const currentTranslationListeners = new Set();
+  const serviceOperations = new Map();
   let activeTask = null;
   let currentCopyCandidate = null;
   let currentTranslation = null;
@@ -256,7 +284,8 @@ function createRuyiRuntime({
         partialTranslation: next.partialTranslation || "",
         result: next.result ? freezeDeep(next.result) : null,
         stale: Boolean(
-          task &&
+          next.stale ||
+            (task &&
             inputsFingerprint(inputs) !==
               inputsFingerprint({
                 sourceText: task.sourceText,
@@ -265,7 +294,7 @@ function createRuyiRuntime({
                 qualityMode: task.qualityMode,
                 additionalRequirements: task.additionalRequirements,
                 taskTerms: task.taskTerms,
-              }),
+              })),
         ),
       });
     }
@@ -387,86 +416,487 @@ function createRuyiRuntime({
     return initial;
   }
 
-  async function getServiceConfiguration() {
-    const settings = readSettings();
-    const configurations = Array.isArray(settings.serviceConfigurations)
+  function configurationsIn(settings) {
+    return Array.isArray(settings.serviceConfigurations)
       ? settings.serviceConfigurations
       : [];
-    const configuration = configurations.find(
-      (candidate) => candidate.id === settings.currentServiceConfigurationId,
+  }
+
+  function findConfiguration(settings, configurationId) {
+    return configurationsIn(settings).find(
+      (candidate) => candidate.id === configurationId,
     );
+  }
 
-    if (!configuration) {
-      return {
-        serviceConfiguration: null,
-        defaults: {
-          targetLanguage: {
-            ...(settings.defaults && settings.defaults.targetLanguage
-              ? settings.defaults.targetLanguage
-              : DEFAULTS.targetLanguage),
-          },
-          qualityMode: "standard",
-          additionalRequirements:
-            settings.defaults &&
-            typeof settings.defaults.additionalRequirements === "string"
-              ? settings.defaults.additionalRequirements
-              : "",
-        },
-      };
-    }
+  function apiKeyFor(configurationId) {
+    return cryptoStorage.getItem(`${API_KEY_PREFIX}${configurationId}`);
+  }
 
-    const apiKey = cryptoStorage.getItem(`${API_KEY_PREFIX}${configuration.id}`);
-    const hasApiKey = typeof apiKey === "string" && apiKey.length > 0;
-
+  function defaultsView(settings) {
     return {
-      serviceConfiguration: {
-        id: configuration.id,
-        name: configuration.name,
-        type: configuration.type,
-        protocol: configuration.protocol,
-        translationUrl: configuration.translationUrl,
-        modelListUrl: configuration.modelListUrl,
-        authentication: configuration.authentication,
-        model: configuration.model,
-        stream: configuration.stream,
-        hasApiKey,
-        maskedApiKey: hasApiKey ? `••••••••${apiKey.slice(-4)}` : null,
+      targetLanguage: {
+        ...(settings.defaults && settings.defaults.targetLanguage
+          ? settings.defaults.targetLanguage
+          : DEFAULTS.targetLanguage),
       },
-      defaults: {
-        targetLanguage: { ...settings.defaults.targetLanguage },
-        qualityMode: settings.defaults.qualityMode,
-        additionalRequirements: settings.defaults.additionalRequirements,
-      },
+      qualityMode: "standard",
+      additionalRequirements:
+        settings.defaults &&
+        typeof settings.defaults.additionalRequirements === "string"
+          ? settings.defaults.additionalRequirements
+          : "",
     };
   }
 
-  async function saveApiKey(credentialForm) {
+  function serviceConfigurationsState(settings) {
+    return freezeDeep({
+      currentServiceConfigurationId:
+        typeof settings.currentServiceConfigurationId === "string"
+          ? settings.currentServiceConfigurationId
+          : null,
+      serviceConfigurations: configurationsIn(settings).map((configuration) =>
+        serviceConfigurationView(configuration, apiKeyFor(configuration.id)),
+      ),
+    });
+  }
+
+  async function getServiceConfigurations() {
+    return serviceConfigurationsState(readSettings());
+  }
+
+  async function getServiceConfiguration(configurationId) {
+    const settings = readSettings();
+    const resolvedConfigurationId =
+      typeof configurationId === "string"
+        ? configurationId
+        : settings.currentServiceConfigurationId;
+    const configuration = findConfiguration(settings, resolvedConfigurationId);
+
+    return {
+      serviceConfiguration: configuration
+        ? serviceConfigurationView(configuration, apiKeyFor(configuration.id))
+        : null,
+      defaults: defaultsView(settings),
+    };
+  }
+
+  function credentialValue(credentialForm) {
     const apiKeyInput =
       credentialForm &&
       credentialForm.elements &&
       typeof credentialForm.elements.namedItem === "function"
         ? credentialForm.elements.namedItem("apiKey")
         : null;
-    const apiKey = apiKeyInput && apiKeyInput.value;
+    return apiKeyInput && apiKeyInput.value;
+  }
+
+  async function saveServiceApiKey(configurationId, credentialForm) {
+    const apiKey = credentialValue(credentialForm);
     if (typeof apiKey !== "string" || apiKey.trim().length === 0) {
       throw new Error("API Key 不能为空。");
     }
 
     const settings = readSettings();
-    const configurations = Array.isArray(settings.serviceConfigurations)
-      ? settings.serviceConfigurations
-      : [];
-    const configuration = configurations.find(
-      (candidate) => candidate.id === settings.currentServiceConfigurationId,
-    );
+    const configuration = findConfiguration(settings, configurationId);
     if (!configuration) {
       throw new Error("没有可保存密钥的服务配置。");
     }
+    if (configuration.authentication !== "bearer") {
+      throw configurationError("authentication", "不鉴权配置不保存 API Key。");
+    }
+    normalizeServiceUrl(configuration.translationUrl, "translationUrl", apiKey.trim());
+    normalizeServiceUrl(configuration.modelListUrl, "modelListUrl", apiKey.trim());
     cryptoStorage.setItem(
       `${API_KEY_PREFIX}${configuration.id}`,
       apiKey.trim(),
     );
+    return serviceConfigurationsState(settings);
+  }
+
+  async function saveApiKey(credentialForm) {
+    const settings = readSettings();
+    await saveServiceApiKey(settings.currentServiceConfigurationId, credentialForm);
     return getServiceConfiguration();
+  }
+
+  async function deleteServiceApiKey(configurationId) {
+    const settings = readSettings();
+    if (!findConfiguration(settings, configurationId)) {
+      throw configurationError(null, "服务配置不存在。");
+    }
+    cryptoStorage.removeItem(`${API_KEY_PREFIX}${configurationId}`);
+    return serviceConfigurationsState(settings);
+  }
+
+  function cancelServiceOperationsForConfiguration(configurationId) {
+    for (const operation of serviceOperations.values()) {
+      if (operation.configurationId === configurationId) {
+        operation.controller.abort();
+      }
+    }
+  }
+
+  function invalidateConfirmationsForConfiguration(configurationId) {
+    for (const [token, pending] of pendingConfirmations) {
+      if (pending.configurationId === configurationId) {
+        pendingConfirmations.delete(token);
+      }
+    }
+  }
+
+  function markCurrentTranslationForConfigurationChange(configurationId) {
+    if (
+      currentTranslation &&
+      currentTranslation.task &&
+      currentTranslation.task.serviceConfigurationId === configurationId
+    ) {
+      publishCurrentTranslation({ ...currentTranslation, stale: true });
+    }
+  }
+
+  function assertConfigurationCanBeEdited(configurationId) {
+    const currentTaskUsesConfiguration =
+      currentTranslation &&
+      currentTranslation.task &&
+      currentTranslation.task.serviceConfigurationId === configurationId &&
+      ["preparing", "awaiting_confirmation", "translating"].includes(
+        currentTranslation.phase,
+      );
+    const pendingConfirmationUsesConfiguration = [...pendingConfirmations.values()].some(
+      (pending) => pending.configurationId === configurationId,
+    );
+    if (
+      (activeTask && activeTask.configurationId === configurationId) ||
+      currentTaskUsesConfiguration ||
+      pendingConfirmationUsesConfiguration
+    ) {
+      throw configurationError(
+        null,
+        "当前翻译正在使用这项配置，请先取消翻译。",
+        "translation_active",
+      );
+    }
+  }
+
+  async function saveServiceConfiguration(input, credentialForm) {
+    const settings = readSettings();
+    const configurations = configurationsIn(settings);
+    const existing =
+      input && typeof input.id === "string"
+        ? findConfiguration(settings, input.id)
+        : null;
+    if (input && typeof input.id === "string" && !existing) {
+      throw configurationError(null, "要编辑的服务配置不存在。");
+    }
+    if (existing) assertConfigurationCanBeEdited(existing.id);
+    const previousTranslationUrl = existing && existing.translationUrl;
+    const credential = credentialValue(credentialForm);
+    const replacementApiKey =
+      typeof credential === "string" && credential.trim().length > 0
+        ? credential.trim()
+        : null;
+    const normalized = validateServiceConfiguration(input, {
+      existing,
+      configurations,
+      apiKey: replacementApiKey || (existing ? apiKeyFor(existing.id) : null),
+      idFactory: configurationIdFactory,
+    });
+
+    if (existing) {
+      const index = configurations.findIndex((candidate) => candidate.id === existing.id);
+      configurations.splice(index, 1, normalized);
+      cancelServiceOperationsForConfiguration(existing.id);
+      if (previousTranslationUrl !== normalized.translationUrl) {
+        invalidateConfirmationsForConfiguration(existing.id);
+      }
+      if (normalized.authentication === "none") {
+        cryptoStorage.removeItem(`${API_KEY_PREFIX}${normalized.id}`);
+      }
+      markCurrentTranslationForConfigurationChange(existing.id);
+    } else {
+      configurations.push(normalized);
+      settings.currentServiceConfigurationId = normalized.id;
+      if (currentTranslation) {
+        updateCurrentTranslationInputs({
+          ...currentTranslation.inputs,
+          serviceConfigurationId: normalized.id,
+        });
+      }
+    }
+    settings.serviceConfigurations = configurations;
+    if (normalized.authentication === "bearer" && replacementApiKey) {
+      cryptoStorage.setItem(`${API_KEY_PREFIX}${normalized.id}`, replacementApiKey);
+    }
+    plainStorage.setItem(SETTINGS_KEY, settings);
+    return serviceConfigurationsState(settings);
+  }
+
+  async function duplicateServiceConfiguration(configurationId) {
+    const settings = readSettings();
+    const configurations = configurationsIn(settings);
+    const source = findConfiguration(settings, configurationId);
+    if (!source) throw configurationError(null, "要复制的服务配置不存在。");
+    const copy = validateServiceConfiguration(
+      {
+        ...source,
+        id: null,
+        name: uniqueCopyName(source.name, configurations),
+      },
+      {
+        configurations,
+        idFactory: configurationIdFactory,
+      },
+    );
+    copy.cachedModels = [];
+    copy.modelsFetchedAt = null;
+    delete copy.confirmedTranslationUrl;
+    configurations.push(copy);
+    settings.currentServiceConfigurationId = copy.id;
+    plainStorage.setItem(SETTINGS_KEY, settings);
+    if (currentTranslation) {
+      updateCurrentTranslationInputs({
+        ...currentTranslation.inputs,
+        serviceConfigurationId: copy.id,
+      });
+    }
+    return serviceConfigurationsState(settings);
+  }
+
+  async function moveServiceConfiguration(configurationId, direction) {
+    const settings = readSettings();
+    const configurations = configurationsIn(settings);
+    const index = configurations.findIndex((candidate) => candidate.id === configurationId);
+    if (index < 0) throw configurationError(null, "要排序的服务配置不存在。");
+    const targetIndex = direction === "up" ? index - 1 : direction === "down" ? index + 1 : -1;
+    if (targetIndex >= 0 && targetIndex < configurations.length) {
+      const [configuration] = configurations.splice(index, 1);
+      configurations.splice(targetIndex, 0, configuration);
+      plainStorage.setItem(SETTINGS_KEY, settings);
+    }
+    return serviceConfigurationsState(settings);
+  }
+
+  async function setCurrentServiceConfiguration(configurationId) {
+    const settings = readSettings();
+    if (!findConfiguration(settings, configurationId)) {
+      throw configurationError(null, "要使用的服务配置不存在。");
+    }
+    settings.currentServiceConfigurationId = configurationId;
+    plainStorage.setItem(SETTINGS_KEY, settings);
+    if (currentTranslation) {
+      updateCurrentTranslationInputs({
+        ...currentTranslation.inputs,
+        serviceConfigurationId: configurationId,
+      });
+    }
+    return serviceConfigurationsState(settings);
+  }
+
+  async function deleteServiceConfiguration(configurationId, confirmCurrent = false) {
+    const settings = readSettings();
+    const configurations = configurationsIn(settings);
+    const index = configurations.findIndex((candidate) => candidate.id === configurationId);
+    if (index < 0) throw configurationError(null, "要删除的服务配置不存在。");
+    assertConfigurationCanBeEdited(configurationId);
+    if (settings.currentServiceConfigurationId === configurationId && !confirmCurrent) {
+      throw configurationError(
+        null,
+        "删除当前服务配置前需要确认。",
+        "confirmation_required",
+      );
+    }
+    cancelServiceOperationsForConfiguration(configurationId);
+    invalidateConfirmationsForConfiguration(configurationId);
+    cryptoStorage.removeItem(`${API_KEY_PREFIX}${configurationId}`);
+    configurations.splice(index, 1);
+    if (configurations.length === 0) {
+      settings.serviceConfigurations = [];
+      settings.currentServiceConfigurationId = null;
+    } else {
+      settings.serviceConfigurations = configurations;
+      if (settings.currentServiceConfigurationId === configurationId) {
+        settings.currentServiceConfigurationId = configurations[0].id;
+      }
+    }
+    plainStorage.setItem(SETTINGS_KEY, settings);
+    if (currentTranslation) {
+      updateCurrentTranslationInputs({
+        ...currentTranslation.inputs,
+        serviceConfigurationId: settings.currentServiceConfigurationId,
+      });
+    }
+    return serviceConfigurationsState(settings);
+  }
+
+  function beginServiceOperation(operationId, configurationId) {
+    if (typeof operationId !== "string" || operationId.length === 0) {
+      throw configurationError(null, "服务操作 ID 无效。");
+    }
+    if (serviceOperations.has(operationId)) {
+      throw configurationError(null, "同一服务操作已经开始。");
+    }
+    const controller = new AbortController();
+    const operation = { operationId, configurationId, controller };
+    serviceOperations.set(operationId, operation);
+    return operation;
+  }
+
+  function finishServiceOperation(operation) {
+    if (serviceOperations.get(operation.operationId) === operation) {
+      serviceOperations.delete(operation.operationId);
+    }
+  }
+
+  function cancelServiceOperation(operationId) {
+    const operation = serviceOperations.get(operationId);
+    if (operation) operation.controller.abort();
+  }
+
+  function serviceOperationFailure(error, response) {
+    const code = response ? mapHttpError(response.status) : mapTransportError(error);
+    const requestId =
+      response && response.headers && response.headers["x-request-id"];
+    return freezeDeep({
+      status: "failed",
+      error: {
+        code,
+        message: safeTransportErrorMessage(error, code),
+        ...(response ? { httpStatus: response.status } : {}),
+        ...(typeof requestId === "string" ? { requestId } : {}),
+      },
+    });
+  }
+
+  function serviceRequestContext(configurationId, urlField) {
+    const settings = readSettings();
+    const configuration = findConfiguration(settings, configurationId);
+    if (!configuration) {
+      throw configurationError(null, "服务配置不存在。");
+    }
+    const apiKey = apiKeyFor(configuration.id);
+    if (
+      configuration.authentication === "bearer" &&
+      (typeof apiKey !== "string" || apiKey.length === 0)
+    ) {
+      throw configurationError(null, "Bearer 配置缺少 API Key。");
+    }
+    const url = normalizeServiceUrl(configuration[urlField], urlField, apiKey);
+    const headers = {};
+    if (configuration.authentication === "bearer") {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    return { settings, configuration: { ...configuration }, apiKey, url, headers };
+  }
+
+  async function testServiceConnection({ operationId, configurationId }) {
+    let context;
+    let operation;
+    try {
+      context = serviceRequestContext(configurationId, "translationUrl");
+      operation = beginServiceOperation(operationId, configurationId);
+      const input = {
+        schemaVersion: "translation-input.v1",
+        taskId: "connection-test",
+        targetLanguage: {
+          kind: "preset",
+          id: "zh-CN",
+          modelLabel: "Simplified Chinese",
+        },
+        domainProfile: null,
+        matchedTerms: [],
+        referenceTranslations: [],
+        additionalRequirements: "",
+        protectedItems: [],
+        qualityMode: "standard",
+        mode: "full_document",
+        analysis: null,
+        sourceText: CONNECTION_TEST_SOURCE_TEXT,
+      };
+      let sawData = false;
+      const protocolOperation = createTranslationProtocolOperation({
+        configuration: context.configuration,
+        input,
+      });
+      const response = await transport.request({
+        url: context.url,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          ...context.headers,
+        },
+        body: protocolOperation.body,
+        signal: operation.controller.signal,
+        maxResponseBytes: CONNECTION_TEST_MAX_RESPONSE_BYTES,
+        noDataTimeoutMilliseconds: CONNECTION_TEST_NO_DATA_TIMEOUT_MILLISECONDS,
+        totalTimeoutMilliseconds: CONNECTION_TEST_TOTAL_TIMEOUT_MILLISECONDS,
+        onData(chunk) {
+          if (!operation.controller.signal.aborted) {
+            sawData = true;
+            protocolOperation.push(chunk);
+          }
+        },
+      });
+      if (operation.controller.signal.aborted) {
+        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
+      }
+      if (response.status < 200 || response.status >= 300) {
+        return serviceOperationFailure(null, response);
+      }
+      protocolOperation.finish(response.body, sawData);
+      return freezeDeep({ status: "completed" });
+    } catch (error) {
+      return serviceOperationFailure(error);
+    } finally {
+      if (operation) finishServiceOperation(operation);
+    }
+  }
+
+  async function fetchServiceModels({ operationId, configurationId }) {
+    let context;
+    let operation;
+    try {
+      context = serviceRequestContext(configurationId, "modelListUrl");
+      operation = beginServiceOperation(operationId, configurationId);
+      const response = await transport.request({
+        url: context.url,
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          ...context.headers,
+        },
+        body: "",
+        signal: operation.controller.signal,
+        maxResponseBytes: MODEL_LIST_MAX_RESPONSE_BYTES,
+        noDataTimeoutMilliseconds: MODEL_LIST_TOTAL_TIMEOUT_MILLISECONDS,
+        totalTimeoutMilliseconds: MODEL_LIST_TOTAL_TIMEOUT_MILLISECONDS,
+      });
+      if (operation.controller.signal.aborted) {
+        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
+      }
+      if (response.status < 200 || response.status >= 300) {
+        return serviceOperationFailure(null, response);
+      }
+      const models = parseModelIds(response.body);
+      const latestSettings = readSettings();
+      const latestConfiguration = findConfiguration(latestSettings, configurationId);
+      if (!latestConfiguration) {
+        throw Object.assign(new Error("配置已删除。"), { code: "cancelled" });
+      }
+      const fetchedAt = now().toISOString();
+      latestConfiguration.cachedModels = models;
+      latestConfiguration.modelsFetchedAt = fetchedAt;
+      plainStorage.setItem(SETTINGS_KEY, latestSettings);
+      return freezeDeep({
+        status: "completed",
+        models: [...models],
+        fetchedAt,
+        currentModelPresent: models.includes(latestConfiguration.model),
+      });
+    } catch (error) {
+      return serviceOperationFailure(error);
+    } finally {
+      if (operation) finishServiceOperation(operation);
+    }
   }
 
   async function startStandardTranslation(request, onProgress = () => undefined) {
@@ -505,7 +935,7 @@ function createRuyiRuntime({
     preparingTaskIds.add(request.taskId);
     let state;
     try {
-      state = await getServiceConfiguration();
+      state = await getServiceConfiguration(submittedInputs.serviceConfigurationId);
     } finally {
       preparingTaskIds.delete(request.taskId);
     }
@@ -532,7 +962,10 @@ function createRuyiRuntime({
       return result;
     }
 
-    if (!state.serviceConfiguration.hasApiKey) {
+    if (
+      state.serviceConfiguration.authentication === "bearer" &&
+      !state.serviceConfiguration.hasApiKey
+    ) {
       const result = {
         status: "configuration_required",
         reason: "missing_api_key",
@@ -544,29 +977,17 @@ function createRuyiRuntime({
     }
 
     const settings = readSettings();
-    const configuration = settings.serviceConfigurations.find(
-      (candidate) => candidate.id === settings.currentServiceConfigurationId,
+    const configuration = findConfiguration(
+      settings,
+      submittedInputs.serviceConfigurationId,
     );
     let normalizedTranslationUrl;
     try {
-      const parsedTranslationUrl = new URL(configuration.translationUrl);
-      const apiKey = cryptoStorage.getItem(`${API_KEY_PREFIX}${configuration.id}`);
-      const urlContainsApiKey =
-        typeof apiKey === "string" &&
-        apiKey.length > 0 &&
-        (parsedTranslationUrl.username === apiKey ||
-          parsedTranslationUrl.password === apiKey ||
-          [...parsedTranslationUrl.searchParams.values()].some(
-            (value) => value === apiKey,
-          ));
-      if (
-        parsedTranslationUrl.username ||
-        parsedTranslationUrl.password ||
-        urlContainsApiKey
-      ) {
-        throw new Error("服务地址包含凭据。");
-      }
-      normalizedTranslationUrl = parsedTranslationUrl.toString();
+      normalizedTranslationUrl = normalizeServiceUrl(
+        configuration.translationUrl,
+        "translationUrl",
+        apiKeyFor(configuration.id),
+      );
     } catch {
       const result = {
         status: "failed",
@@ -651,7 +1072,7 @@ function createRuyiRuntime({
       }
     }
 
-    const apiKey = cryptoStorage.getItem(`${API_KEY_PREFIX}${configuration.id}`);
+    const apiKey = apiKeyFor(configuration.id);
     const input = {
       schemaVersion: "translation-input.v1",
       taskId: request.taskId,
@@ -670,7 +1091,11 @@ function createRuyiRuntime({
       activeTask.controller.abort();
     }
     const controller = new AbortController();
-    const task = { taskId: request.taskId, controller };
+    const task = {
+      taskId: request.taskId,
+      configurationId: configuration.id,
+      controller,
+    };
     activeTask = task;
     currentCopyCandidate = null;
     function emitProgress(event) {
@@ -726,7 +1151,9 @@ function createRuyiRuntime({
         method: "POST",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
-          Authorization: `Bearer ${apiKey}`,
+          ...(configuration.authentication === "bearer"
+            ? { Authorization: `Bearer ${apiKey}` }
+            : {}),
         },
         body: protocolOperation.body,
         signal: controller.signal,
@@ -840,7 +1267,7 @@ function createRuyiRuntime({
         ...(quality ? { quality } : {}),
         error: {
           code,
-          message: errorMessage(code),
+          message: safeTransportErrorMessage(error, code),
         },
       });
       storeCurrentResult(
@@ -945,6 +1372,17 @@ function createRuyiRuntime({
 
   return Object.freeze({
     getServiceConfiguration,
+    getServiceConfigurations,
+    saveServiceConfiguration,
+    duplicateServiceConfiguration,
+    moveServiceConfiguration,
+    setCurrentServiceConfiguration,
+    deleteServiceConfiguration,
+    saveServiceApiKey,
+    deleteServiceApiKey,
+    testServiceConnection,
+    fetchServiceModels,
+    cancelServiceOperation,
     saveApiKey,
     startStandardTranslation,
     cancelTranslation,

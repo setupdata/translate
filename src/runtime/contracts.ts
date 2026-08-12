@@ -12,11 +12,30 @@ export type ServiceConfigurationView = {
   protocol: "chat-completions" | "responses";
   translationUrl: string;
   modelListUrl: string;
-  authentication: "bearer";
+  authentication: "bearer" | "none";
   model: string;
   stream: boolean;
   hasApiKey: boolean;
   maskedApiKey: string | null;
+  cachedModels: string[];
+  modelsFetchedAt: string | null;
+};
+
+export type ServiceConfigurationInput = {
+  id: string | null;
+  name: string;
+  type: "deepseek-official" | "custom";
+  protocol: "chat-completions" | "responses";
+  translationUrl: string;
+  modelListUrl: string;
+  authentication: "bearer" | "none";
+  model: string;
+  stream: boolean;
+};
+
+export type ServiceConfigurationsState = {
+  currentServiceConfigurationId: string | null;
+  serviceConfigurations: ServiceConfigurationView[];
 };
 
 export type RuntimeConfigurationState = {
@@ -58,6 +77,26 @@ export type StableTranslationErrorCode =
   | "protocol_error"
   | "content_rejected"
   | "unknown_error";
+
+export type ServiceOperationError = {
+  code: StableTranslationErrorCode;
+  message: string;
+  httpStatus?: number;
+  requestId?: string;
+};
+
+export type ServiceConnectionResult =
+  | { status: "completed" }
+  | { status: "failed"; error: ServiceOperationError };
+
+export type ModelListResult =
+  | {
+      status: "completed";
+      models: string[];
+      fetchedAt: string;
+      currentModelPresent: boolean;
+    }
+  | { status: "failed"; error: ServiceOperationError };
 
 export type TranslationProgressEvent =
   | { type: "started"; taskId: string }
@@ -169,7 +208,42 @@ export type CurrentTranslationSnapshot = {
 };
 
 export interface RuyiRuntimeBridge {
-  getServiceConfiguration(): Promise<RuntimeConfigurationState>;
+  getServiceConfiguration(
+    configurationId?: string,
+  ): Promise<RuntimeConfigurationState>;
+  getServiceConfigurations(): Promise<ServiceConfigurationsState>;
+  saveServiceConfiguration(
+    input: ServiceConfigurationInput,
+    credentialForm?: HTMLFormElement,
+  ): Promise<ServiceConfigurationsState>;
+  duplicateServiceConfiguration(
+    configurationId: string,
+  ): Promise<ServiceConfigurationsState>;
+  moveServiceConfiguration(
+    configurationId: string,
+    direction: "up" | "down",
+  ): Promise<ServiceConfigurationsState>;
+  setCurrentServiceConfiguration(
+    configurationId: string,
+  ): Promise<ServiceConfigurationsState>;
+  deleteServiceConfiguration(
+    configurationId: string,
+    confirmCurrent?: boolean,
+  ): Promise<ServiceConfigurationsState>;
+  saveServiceApiKey(
+    configurationId: string,
+    credentialForm: HTMLFormElement,
+  ): Promise<ServiceConfigurationsState>;
+  deleteServiceApiKey(configurationId: string): Promise<ServiceConfigurationsState>;
+  testServiceConnection(request: {
+    operationId: string;
+    configurationId: string;
+  }): Promise<ServiceConnectionResult>;
+  fetchServiceModels(request: {
+    operationId: string;
+    configurationId: string;
+  }): Promise<ModelListResult>;
+  cancelServiceOperation(operationId: string): void;
   saveApiKey(credentialForm: HTMLFormElement): Promise<RuntimeConfigurationState>;
   startStandardTranslation(
     request: StandardTranslationRequest,

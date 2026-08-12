@@ -32,4 +32,56 @@ describe("preload storage boundary", () => {
       "uTools 加密存储不可用，API Key 未保存。",
     );
   });
+
+  it("exposes only named business methods and never exposes storage or Node objects", async () => {
+    const preloadPath = resolve(import.meta.dirname, "../../public/preload.js");
+    const preloadSource = await readFile(preloadPath, "utf8");
+    const preloadWindow: Record<string, unknown> = {
+      utools: {
+        dbStorage: {
+          getItem: () => undefined,
+          setItem: () => undefined,
+          removeItem: () => undefined,
+        },
+        dbCryptoStorage: {
+          getItem: () => undefined,
+          setItem: () => undefined,
+          removeItem: () => undefined,
+        },
+      },
+    };
+    runInNewContext(
+      preloadSource,
+      { require: createRequire(preloadPath), window: preloadWindow },
+      { filename: preloadPath },
+    );
+
+    const runtime = preloadWindow.ruyiTranslation as Record<string, unknown>;
+    expect(Object.keys(runtime).sort()).toEqual(
+      [
+        "cancelServiceOperation",
+        "cancelTranslation",
+        "clearCurrentTranslation",
+        "copyTranslation",
+        "deleteServiceApiKey",
+        "deleteServiceConfiguration",
+        "duplicateServiceConfiguration",
+        "fetchServiceModels",
+        "getCurrentTranslation",
+        "getServiceConfiguration",
+        "getServiceConfigurations",
+        "moveServiceConfiguration",
+        "pasteTranslation",
+        "saveApiKey",
+        "saveServiceApiKey",
+        "saveServiceConfiguration",
+        "setCurrentServiceConfiguration",
+        "startStandardTranslation",
+        "subscribeCurrentTranslation",
+        "testServiceConnection",
+        "updateCurrentTranslationInputs",
+      ].sort(),
+    );
+    expect(JSON.stringify(runtime)).not.toMatch(/dbStorage|dbCryptoStorage|Authorization/u);
+  });
 });

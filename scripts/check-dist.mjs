@@ -14,6 +14,7 @@ const requiredFiles = [
   "lib/quality-checks.cjs",
   "lib/responses-parser.cjs",
   "lib/ruyi-runtime.cjs",
+  "lib/service-configurations.cjs",
   "lib/text-limits.cjs",
   "lib/translation-protocol.cjs",
 ];

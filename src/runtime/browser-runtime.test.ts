@@ -11,6 +11,17 @@ describe("getBrowserRuntime", () => {
   it("returns the preload business interface without exposing another API", () => {
     const bridge: RuyiRuntimeBridge = {
       getServiceConfiguration: vi.fn(),
+      getServiceConfigurations: vi.fn(),
+      saveServiceConfiguration: vi.fn(),
+      duplicateServiceConfiguration: vi.fn(),
+      moveServiceConfiguration: vi.fn(),
+      setCurrentServiceConfiguration: vi.fn(),
+      deleteServiceConfiguration: vi.fn(),
+      saveServiceApiKey: vi.fn(),
+      deleteServiceApiKey: vi.fn(),
+      testServiceConnection: vi.fn(),
+      fetchServiceModels: vi.fn(),
+      cancelServiceOperation: vi.fn(),
       saveApiKey: vi.fn(),
       startStandardTranslation: vi.fn(),
       cancelTranslation: vi.fn(),

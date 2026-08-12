@@ -135,6 +135,156 @@ describe("Node chat transport", () => {
     expect(result.complete).toBe(true);
   });
 
+  it("supports bodyless GET requests and request-specific response limits", async () => {
+    let receivedMethod = "";
+    let receivedBody = "";
+    let receivedContentLength: string | undefined;
+    const server = createServer((request, response) => {
+      receivedMethod = request.method ?? "";
+      receivedContentLength = request.headers["content-length"];
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        receivedBody += chunk;
+      });
+      request.on("end", () => {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end('{"data":[{"id":"model-a"}]}');
+      });
+    });
+    openServers.push(server);
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("测试服务没有可用端口。");
+    }
+    const { createNodeChatTransport } = require(transportPath);
+    const transport = createNodeChatTransport();
+    const url = `http://127.0.0.1:${address.port}/models`;
+
+    const result = await transport.request({
+      url,
+      method: "GET",
+      headers: {},
+      body: "",
+      maxResponseBytes: 1_024,
+      noDataTimeoutMilliseconds: 1_000,
+      totalTimeoutMilliseconds: 1_000,
+    });
+    expect(result.status).toBe(200);
+    expect(receivedMethod).toBe("GET");
+    expect(receivedBody).toBe("");
+    expect(receivedContentLength).toBeUndefined();
+
+    await expect(
+      transport.request({
+        url,
+        method: "GET",
+        headers: {},
+        body: "",
+        maxResponseBytes: 8,
+        noDataTimeoutMilliseconds: 1_000,
+        totalTimeoutMilliseconds: 1_000,
+      }),
+    ).rejects.toMatchObject({ code: "response_too_large" });
+  });
+
+  it("follows same-origin redirects", async () => {
+    const visitedPaths: string[] = [];
+    const server = createServer((request, response) => {
+      visitedPaths.push(request.url ?? "");
+      if (request.url === "/start") {
+        response.writeHead(302, { Location: "/models" });
+        response.end();
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end('{"data":[{"id":"model-a"}]}');
+    });
+    openServers.push(server);
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("测试服务没有可用端口。");
+    }
+    const { createNodeChatTransport } = require(transportPath);
+    const transport = createNodeChatTransport();
+
+    const result = await transport.request({
+      url: `http://127.0.0.1:${address.port}/start`,
+      method: "GET",
+      headers: {},
+      body: "",
+    });
+
+    expect(result).toMatchObject({ status: 200, complete: true });
+    expect(visitedPaths).toEqual(["/start", "/models"]);
+  });
+
+  it("stops cross-origin redirects and limits same-origin redirects to three", async () => {
+    let crossOriginTargetCalls = 0;
+    const targetServer = createServer((_request, response) => {
+      crossOriginTargetCalls += 1;
+      response.end("unexpected");
+    });
+    openServers.push(targetServer);
+    await new Promise<void>((resolveListen) =>
+      targetServer.listen(0, "127.0.0.1", resolveListen),
+    );
+    const targetAddress = targetServer.address();
+    if (!targetAddress || typeof targetAddress === "string") {
+      throw new Error("测试服务没有可用端口。");
+    }
+    const targetOrigin = `http://127.0.0.1:${targetAddress.port}`;
+
+    const sourceServer = createServer((request, response) => {
+      if (request.url === "/cross-origin") {
+        response.writeHead(302, { Location: `${targetOrigin}/target` });
+        response.end();
+        return;
+      }
+      const redirectIndex = Number((request.url ?? "").slice(6)) || 0;
+      response.writeHead(302, { Location: `/loop-${redirectIndex + 1}` });
+      response.end();
+    });
+    openServers.push(sourceServer);
+    await new Promise<void>((resolveListen) =>
+      sourceServer.listen(0, "127.0.0.1", resolveListen),
+    );
+    const sourceAddress = sourceServer.address();
+    if (!sourceAddress || typeof sourceAddress === "string") {
+      throw new Error("测试服务没有可用端口。");
+    }
+    const sourceOrigin = `http://127.0.0.1:${sourceAddress.port}`;
+    const { createNodeChatTransport } = require(transportPath);
+    const transport = createNodeChatTransport();
+
+    await expect(
+      transport.request({
+        url: `${sourceOrigin}/cross-origin`,
+        method: "GET",
+        headers: {},
+        body: "",
+      }),
+    ).rejects.toMatchObject({
+      code: "request_rejected",
+      redirectOrigin: targetOrigin,
+    });
+    expect(crossOriginTargetCalls).toBe(0);
+
+    await expect(
+      transport.request({
+        url: `${sourceOrigin}/loop-0`,
+        method: "GET",
+        headers: {},
+        body: "",
+      }),
+    ).rejects.toMatchObject({ code: "request_rejected" });
+  });
+
   it("classifies user abort, no-data timeout, and total timeout", async () => {
     const { createNodeChatTransport } = require(transportPath);
 
