@@ -11,6 +11,7 @@ const requiredFiles = [
   "lib/node-chat-transport.cjs",
   "lib/chat-sse-parser.cjs",
   "lib/prompts.cjs",
+  "lib/quality-checks.cjs",
   "lib/responses-parser.cjs",
   "lib/ruyi-runtime.cjs",
   "lib/text-limits.cjs",

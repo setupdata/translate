@@ -3,6 +3,10 @@ const API_KEY_PREFIX = "ruyi.secret.api-key.";
 const { randomBytes } = require("crypto");
 const { inspectSourceText } = require("./text-limits.cjs");
 const {
+  extractProtectedItems,
+  inspectTranslationQuality,
+} = require("./quality-checks.cjs");
+const {
   createTranslationProtocolOperation,
 } = require("./translation-protocol.cjs");
 
@@ -169,11 +173,13 @@ function createRuyiRuntime({
   transport,
   servicePreset = DEEPSEEK_FLASH_PRESET,
   tokenFactory = () => randomBytes(24).toString("hex"),
+  hostActions = {},
 }) {
   const pendingConfirmations = new Map();
   const preparingTaskIds = new Set();
   const cancelledPreparingTaskIds = new Set();
   let activeTask = null;
+  let currentCopyCandidate = null;
 
   function readSettings() {
     const existing = plainStorage.getItem(SETTINGS_KEY);
@@ -439,7 +445,7 @@ function createRuyiRuntime({
       matchedTerms: [],
       referenceTranslations: [],
       additionalRequirements: settings.defaults.additionalRequirements,
-      protectedItems: [],
+      protectedItems: extractProtectedItems(request.sourceText),
       qualityMode: "standard",
       mode: "full_document",
       analysis: null,
@@ -451,6 +457,7 @@ function createRuyiRuntime({
     const controller = new AbortController();
     const task = { taskId: request.taskId, controller };
     activeTask = task;
+    currentCopyCandidate = null;
     function emitProgress(event) {
       try {
         onProgress(event);
@@ -532,12 +539,28 @@ function createRuyiRuntime({
       }
 
       const translation = protocolOperation.finish(response.body, sawData);
+      const quality = inspectTranslationQuality({
+        sourceText: request.sourceText,
+        translation,
+        streamCompleted: true,
+      });
+      currentCopyCandidate = {
+        taskId: request.taskId,
+        sourceText: request.sourceText,
+        translation,
+        pasteBlocked: quality.pasteBlocked,
+      };
       emitProgress({
         type: "finished",
         taskId: request.taskId,
         status: "completed",
       });
-      return { status: "completed", taskId: request.taskId, translation };
+      return {
+        status: "completed",
+        taskId: request.taskId,
+        translation,
+        quality,
+      };
     } catch (error) {
       const code =
         activeTask !== task || controller.signal.aborted
@@ -547,6 +570,22 @@ function createRuyiRuntime({
         error && typeof error.partialTranslation === "string"
           ? error.partialTranslation
           : protocolOperation.partialTranslation();
+      const quality =
+        configuration.stream
+          ? inspectTranslationQuality({
+              sourceText: request.sourceText,
+              translation: partialTranslation || "",
+              streamCompleted: false,
+            })
+          : null;
+      if (quality && partialTranslation) {
+        currentCopyCandidate = {
+          taskId: request.taskId,
+          sourceText: request.sourceText,
+          translation: partialTranslation,
+          pasteBlocked: quality.pasteBlocked,
+        };
+      }
       emitProgress({
         type: "finished",
         taskId: request.taskId,
@@ -557,12 +596,10 @@ function createRuyiRuntime({
         taskId: request.taskId,
         sourceRetained: true,
         ...(partialTranslation ? { partialTranslation } : {}),
+        ...(quality ? { quality } : {}),
         error: {
           code,
-          message:
-            error && typeof error.safeMessage === "string"
-              ? error.safeMessage
-              : errorMessage(code),
+          message: errorMessage(code),
         },
       };
     } finally {
@@ -586,11 +623,54 @@ function createRuyiRuntime({
     }
   }
 
+  function copyTranslation(taskId, confirmRisks = false) {
+    if (!currentCopyCandidate || currentCopyCandidate.taskId !== taskId) {
+      return { status: "unavailable" };
+    }
+    if (currentCopyCandidate.pasteBlocked && !confirmRisks) {
+      return { status: "confirmation_required" };
+    }
+    if (typeof hostActions.copyText !== "function") {
+      return { status: "unavailable" };
+    }
+    try {
+      return hostActions.copyText(currentCopyCandidate.translation)
+        ? { status: "copied" }
+        : { status: "unavailable" };
+    } catch {
+      return { status: "unavailable" };
+    }
+  }
+
+  function pasteTranslation(taskId, currentSourceText) {
+    if (!currentCopyCandidate || currentCopyCandidate.taskId !== taskId) {
+      return { status: "unavailable" };
+    }
+    if (
+      currentCopyCandidate.pasteBlocked ||
+      currentCopyCandidate.sourceText !== currentSourceText
+    ) {
+      return { status: "blocked" };
+    }
+    if (typeof hostActions.pasteText !== "function") {
+      return { status: "unavailable" };
+    }
+    try {
+      return hostActions.pasteText(currentCopyCandidate.translation)
+        ? { status: "pasted" }
+        : { status: "unavailable" };
+    } catch {
+      return { status: "unavailable" };
+    }
+  }
+
   return Object.freeze({
     getServiceConfiguration,
     saveApiKey,
     startStandardTranslation,
     cancelTranslation,
+    copyTranslation,
+    pasteTranslation,
   });
 }
 

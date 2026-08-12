@@ -11,7 +11,7 @@
     "test:watch": "vitest",
     "mock": "node scripts/mock-translation-server.mjs",
     "check:dist": "node scripts/check-dist.mjs",
-    "check:runtime": "node --check public/preload.js && node --check public/lib/chat-sse-parser.cjs && node --check public/lib/node-chat-transport.cjs && node --check public/lib/prompts.cjs && node --check public/lib/responses-parser.cjs && node --check public/lib/ruyi-runtime.cjs && node --check public/lib/text-limits.cjs && node --check public/lib/translation-protocol.cjs && node --check scripts/mock-translation-server.mjs",
+    "check:runtime": "node --check public/preload.js && node --check public/lib/chat-sse-parser.cjs && node --check public/lib/node-chat-transport.cjs && node --check public/lib/prompts.cjs && node --check public/lib/quality-checks.cjs && node --check public/lib/responses-parser.cjs && node --check public/lib/ruyi-runtime.cjs && node --check public/lib/text-limits.cjs && node --check public/lib/translation-protocol.cjs && node --check scripts/mock-translation-server.mjs",
     "check:no-clipboard": "node scripts/check-no-clipboard.mjs"
   },
   "dependencies": {

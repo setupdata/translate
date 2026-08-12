@@ -9,7 +9,7 @@ import { runInNewContext } from "node:vm";
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { App } from "../app/App";
 
@@ -20,6 +20,8 @@ const nativeRequire = createRequire(preloadPath);
 const plainValues = new Map();
 const cryptoValues = new Map();
 const credentialFixture = `fixture-${randomUUID()}-1234`;
+const copyText = vi.fn(() => true);
+const pasteText = vi.fn(() => true);
 
 function memoryStorage(values) {
   return {
@@ -91,6 +93,8 @@ beforeAll(async () => {
     utools: {
       dbStorage: memoryStorage(plainValues),
       dbCryptoStorage: memoryStorage(cryptoValues),
+      copyText,
+      hideMainWindowPasteText: pasteText,
     },
   };
   runInNewContext(
@@ -143,5 +147,9 @@ describe("controlled local translation flow", () => {
     expect(JSON.stringify([...plainValues.values()])).not.toContain(
       credentialFixture,
     );
+    await user.click(screen.getByRole("button", { name: "复制译文" }));
+    await user.click(screen.getByRole("button", { name: "粘贴回原窗口" }));
+    expect(copyText).toHaveBeenCalledWith("这是受控本地模拟服务返回的纯译文。");
+    expect(pasteText).toHaveBeenCalledWith("这是受控本地模拟服务返回的纯译文。");
   });
 });

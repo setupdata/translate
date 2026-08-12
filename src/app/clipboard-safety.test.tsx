@@ -23,6 +23,7 @@ describe("clipboard safety", () => {
       status: "completed",
       taskId: request.taskId,
       translation: "译文",
+      quality: { risks: [], pasteBlocked: false },
     }));
 
     render(

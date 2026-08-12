@@ -9,6 +9,8 @@ function unavailableRuntime(): RuyiRuntimeBridge {
     saveApiKey: unavailable,
     startStandardTranslation: unavailable,
     cancelTranslation: () => undefined,
+    copyTranslation: () => ({ status: "unavailable" as const }),
+    pasteTranslation: () => ({ status: "unavailable" as const }),
   });
 }
 

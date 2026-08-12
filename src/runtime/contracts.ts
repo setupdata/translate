@@ -60,6 +60,31 @@ export type TranslationProgressEvent =
       status: "completed" | "failed" | "cancelled";
     };
 
+export type TranslationQualityRisk = {
+  id: string;
+  code: string;
+  category:
+    | "protected_content"
+    | "structure"
+    | "output_contract"
+    | "stream"
+    | "terminology"
+    | "fluency"
+    | "other";
+  severity: "critical" | "major" | "minor";
+  certainty: "deterministic" | "heuristic";
+  message: string;
+};
+
+export type TranslationQuality = {
+  risks: TranslationQualityRisk[];
+  pasteBlocked: boolean;
+};
+
+export type TranslationHostActionResult =
+  | { status: "copied" | "pasted" }
+  | { status: "confirmation_required" | "blocked" | "unavailable" };
+
 export type StandardTranslationResult =
   | {
       status: "validation_error";
@@ -89,12 +114,18 @@ export type StandardTranslationResult =
         callCount: 1;
       };
     }
-  | { status: "completed"; taskId: string; translation: string }
+  | {
+      status: "completed";
+      taskId: string;
+      translation: string;
+      quality: TranslationQuality;
+    }
   | {
       status: "failed";
       taskId: string;
       sourceRetained: true;
       partialTranslation?: string;
+      quality?: TranslationQuality;
       error: {
         code: StableTranslationErrorCode;
         message: string;
@@ -111,4 +142,6 @@ export interface RuyiRuntimeBridge {
     onProgress?: (event: TranslationProgressEvent) => void,
   ): Promise<StandardTranslationResult>;
   cancelTranslation(taskId: string): void;
+  copyTranslation(taskId: string, confirmRisks?: boolean): TranslationHostActionResult;
+  pasteTranslation(taskId: string, currentSourceText: string): TranslationHostActionResult;
 }

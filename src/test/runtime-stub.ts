@@ -39,8 +39,11 @@ export function createRuntimeStub(
       status: "completed",
       taskId: request.taskId,
       translation: "译文",
+      quality: { risks: [], pasteBlocked: false },
     }),
     cancelTranslation: () => undefined,
+    copyTranslation: () => ({ status: "copied" }),
+    pasteTranslation: () => ({ status: "pasted" }),
     ...overrides,
   };
 }

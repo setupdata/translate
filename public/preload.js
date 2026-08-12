@@ -41,4 +41,16 @@ window.ruyiTranslation = createRuyiRuntime({
   plainStorage,
   cryptoStorage,
   transport: createNodeChatTransport(),
+  hostActions: {
+    copyText(text) {
+      return Boolean(host && typeof host.copyText === "function" && host.copyText(text));
+    },
+    pasteText(text) {
+      return Boolean(
+        host &&
+          typeof host.hideMainWindowPasteText === "function" &&
+          host.hideMainWindowPasteText(text),
+      );
+    },
+  },
 });

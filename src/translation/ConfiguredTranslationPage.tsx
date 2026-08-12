@@ -25,13 +25,24 @@ export function ConfiguredTranslationPage({
   const [configuration, setConfiguration] =
     useState<RuntimeConfigurationState | null>(null);
   const [result, setResult] = useState<StandardTranslationResult | null>(null);
+  const [resultSourceText, setResultSourceText] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [partialTranslation, setPartialTranslation] = useState("");
   const [isTranslating, setIsTranslating] = useState(false);
+  const [confirmRiskCopy, setConfirmRiskCopy] = useState(false);
+  const [hostActionMessage, setHostActionMessage] = useState("");
   const taskId = useRef(createTaskId());
   const requestGeneration = useRef(0);
   const hasAutoStarted = useRef(false);
   const mounted = useRef(true);
+  const riskCopyTrigger = useRef<HTMLButtonElement | null>(null);
+  const riskCopyCancel = useRef<HTMLButtonElement | null>(null);
+  const restoreRiskCopyFocus = useRef(false);
+
+  const closeRiskCopy = useCallback(() => {
+    restoreRiskCopyFocus.current = true;
+    setConfirmRiskCopy(false);
+  }, []);
 
   useEffect(() => {
     mounted.current = true;
@@ -52,12 +63,15 @@ export function ConfiguredTranslationPage({
         return;
       }
       setErrorMessage("");
+      setConfirmRiskCopy(false);
+      setHostActionMessage("");
       if (beginNewTask) {
         runtime.cancelTranslation(taskId.current);
         taskId.current = createTaskId();
       }
       const generation = ++requestGeneration.current;
       setResult(null);
+      setResultSourceText(null);
       setPartialTranslation("");
       setIsTranslating(false);
       if (Array.from(text.replace(/\r\n/gu, "\n")).length > 10_000) {
@@ -91,6 +105,12 @@ export function ConfiguredTranslationPage({
             setPartialTranslation(nextResult.partialTranslation);
           }
           setResult(nextResult);
+          if (
+            nextResult.status === "completed" ||
+            (nextResult.status === "failed" && nextResult.partialTranslation)
+          ) {
+            setResultSourceText(text);
+          }
         }
       } catch {
         if (mounted.current && generation === requestGeneration.current) {
@@ -132,6 +152,12 @@ export function ConfiguredTranslationPage({
     result.reason === "missing_api_key";
   const confirmation =
     result?.status === "confirmation_required" ? result : null;
+  const quality =
+    result?.status === "completed" || result?.status === "failed"
+      ? result.quality
+      : undefined;
+  const resultIsStale =
+    resultSourceText !== null && sourceText !== resultSourceText;
 
   useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
@@ -144,6 +170,25 @@ export function ConfiguredTranslationPage({
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
   }, [isTranslating, runtime]);
+
+  useEffect(() => {
+    if (!confirmRiskCopy) {
+      if (restoreRiskCopyFocus.current) {
+        restoreRiskCopyFocus.current = false;
+        riskCopyTrigger.current?.focus();
+      }
+      return undefined;
+    }
+    riskCopyCancel.current?.focus();
+    function handleRiskDialogEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRiskCopy();
+      }
+    }
+    window.addEventListener("keydown", handleRiskDialogEscape);
+    return () => window.removeEventListener("keydown", handleRiskDialogEscape);
+  }, [closeRiskCopy, confirmRiskCopy]);
 
   return (
     <main>
@@ -305,13 +350,135 @@ export function ConfiguredTranslationPage({
       ) : null}
 
       {result?.status === "completed" ? (
-        <section aria-label="译文">{result.translation}</section>
+        <>
+          <section aria-label="译文">{result.translation}</section>
+          <div className="translation-actions">
+            <button
+              type="button"
+              onClick={(event) => {
+                riskCopyTrigger.current = event.currentTarget;
+                const action = runtime.copyTranslation(result.taskId);
+                if (action.status === "confirmation_required") {
+                  setConfirmRiskCopy(true);
+                  return;
+                }
+                setHostActionMessage(
+                  action.status === "copied" ? "译文已复制。" : "当前环境无法复制译文。",
+                );
+              }}
+            >
+              复制译文
+            </button>
+            <button
+              type="button"
+              disabled={result.quality.pasteBlocked || resultIsStale}
+              aria-describedby={
+                result.quality.pasteBlocked || resultIsStale
+                  ? "paste-blocked-reason"
+                  : undefined
+              }
+              onClick={() => {
+                const action = runtime.pasteTranslation(result.taskId, sourceText);
+                setHostActionMessage(
+                  action.status === "pasted"
+                    ? "译文已粘贴回原窗口。"
+                    : action.status === "blocked"
+                      ? "确定性严重风险尚未解除，不能粘贴。"
+                      : "当前环境无法粘贴译文。",
+                );
+              }}
+            >
+              粘贴回原窗口
+            </button>
+          </div>
+          {result.quality.pasteBlocked || resultIsStale ? (
+            <p id="paste-blocked-reason" className="quality-blocked-note">
+              {resultIsStale
+                ? "源文本已修改，当前译文对应修改前的内容；重新翻译前不能粘贴。"
+                : "译文含确定性严重风险，已禁止直接粘贴；确认风险后仍可复制。"}
+            </p>
+          ) : null}
+        </>
       ) : null}
       {result?.status === "failed" ? (
         <p role="alert">{result.error.message}</p>
       ) : null}
       {result?.status === "failed" && partialTranslation ? (
-        <section aria-label="部分译文">{partialTranslation}</section>
+        <>
+          <section aria-label="部分译文">{partialTranslation}</section>
+          {result.quality ? (
+            <div className="translation-actions">
+              <button
+                type="button"
+                onClick={(event) => {
+                  riskCopyTrigger.current = event.currentTarget;
+                  const action = runtime.copyTranslation(result.taskId);
+                  if (action.status === "confirmation_required") {
+                    setConfirmRiskCopy(true);
+                    return;
+                  }
+                  setHostActionMessage(
+                    action.status === "copied"
+                      ? "部分译文已复制。"
+                      : "当前环境无法复制部分译文。",
+                  );
+                }}
+              >
+                复制部分译文
+              </button>
+              <button type="button" disabled>
+                粘贴回原窗口
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      {quality && quality.risks.length > 0 ? (
+        <section className="quality-risks" aria-labelledby="quality-risk-heading">
+          <h2 id="quality-risk-heading">质量风险</h2>
+          <ul>
+            {quality.risks.map((risk) => (
+              <li key={risk.id}>
+                <strong>
+                  {risk.certainty === "deterministic" && risk.severity === "critical"
+                    ? "严重风险"
+                    : "请复核"}
+                </strong>
+                <span>{risk.message}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {confirmRiskCopy &&
+      (result?.status === "completed" ||
+        (result?.status === "failed" && result.partialTranslation)) ? (
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="risk-copy-heading"
+          className="confirmation-card"
+        >
+          <h2 id="risk-copy-heading">确认复制风险译文</h2>
+          <p>本地检查发现确定性严重风险。复制前请确认你会人工复核译文。</p>
+          <div className="dialog-actions">
+            <button ref={riskCopyCancel} type="button" onClick={closeRiskCopy}>
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const action = runtime.copyTranslation(result.taskId, true);
+                closeRiskCopy();
+                setHostActionMessage(
+                  action.status === "copied" ? "译文已复制。" : "当前环境无法复制译文。",
+                );
+              }}
+            >
+              确认并复制
+            </button>
+          </div>
+        </section>
       ) : null}
       {result?.status === "validation_error" ? (
         <p role="alert">
@@ -324,6 +491,7 @@ export function ConfiguredTranslationPage({
       ) : null}
 
       {errorMessage ? <p role="alert">{errorMessage}</p> : null}
+      {hostActionMessage ? <p aria-live="polite">{hostActionMessage}</p> : null}
     </main>
   );
 }

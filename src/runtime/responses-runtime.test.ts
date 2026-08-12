@@ -97,6 +97,7 @@ describe("Responses translation adapter", () => {
       status: "completed",
       taskId: "responses-normal",
       translation: "你好",
+      quality: { risks: [], pasteBlocked: false },
     });
     const sent = transport.request.mock.calls[0][0];
     const body = JSON.parse(sent.body);
@@ -223,6 +224,7 @@ describe("Responses translation adapter", () => {
       status: "completed",
       taskId: "responses-stream",
       translation: "你好",
+      quality: { risks: [], pasteBlocked: false },
     });
     expect(progress).toHaveBeenCalledWith({
       type: "text_delta",
@@ -323,6 +325,12 @@ describe("Responses translation adapter", () => {
       status: "failed",
       partialTranslation: "部分",
       error: { code },
+      quality: {
+        pasteBlocked: true,
+        risks: expect.arrayContaining([
+          expect.objectContaining({ code: "stream.incomplete" }),
+        ]),
+      },
     });
   });
 
@@ -354,6 +362,12 @@ describe("Responses translation adapter", () => {
       status: "failed",
       partialTranslation: "部分",
       error: { code: "timeout" },
+      quality: {
+        pasteBlocked: true,
+        risks: expect.arrayContaining([
+          expect.objectContaining({ code: "stream.incomplete" }),
+        ]),
+      },
     });
   });
 

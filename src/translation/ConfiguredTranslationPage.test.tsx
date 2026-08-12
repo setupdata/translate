@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -52,6 +52,8 @@ describe("ConfiguredTranslationPage", () => {
         serviceConfiguration: missingKeyService,
       }),
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
 
     render(
@@ -95,6 +97,8 @@ describe("ConfiguredTranslationPage", () => {
         serviceConfiguration: null,
       }),
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
 
     render(
@@ -151,6 +155,8 @@ describe("ConfiguredTranslationPage", () => {
           },
         }),
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
     const sourceText = "Hello";
 
@@ -214,6 +220,8 @@ describe("ConfiguredTranslationPage", () => {
         },
       }),
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
 
     render(
@@ -268,8 +276,11 @@ describe("ConfiguredTranslationPage", () => {
           status: "completed",
           taskId: "task-page",
           translation: "你好",
+          quality: { risks: [], pasteBlocked: false },
         }),
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
     const sourceText = "  Hello\n  ";
 
@@ -300,6 +311,196 @@ describe("ConfiguredTranslationPage", () => {
       expect.any(Function),
     );
     expect(screen.queryByText("翻译如下")).not.toBeInTheDocument();
+  });
+
+  it("shows deterministic risks, blocks paste, and copies only after confirmation", async () => {
+    const user = userEvent.setup();
+    const copyTranslation = vi
+      .fn()
+      .mockReturnValueOnce({ status: "confirmation_required" as const })
+      .mockReturnValueOnce({ status: "confirmation_required" as const })
+      .mockReturnValueOnce({ status: "copied" as const });
+    const pasteTranslation = vi.fn(() => ({ status: "blocked" as const }));
+    const runtime = createRuntimeForBoundary();
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-risk",
+      translation: "版本 2.0",
+      quality: {
+        pasteBlocked: true,
+        risks: [
+          {
+            id: "quality-1",
+            code: "protected.number.mismatch",
+            category: "protected_content",
+            severity: "critical",
+            certainty: "deterministic",
+            message: "数字的数量或原值与源文不一致。",
+          },
+        ],
+      },
+    });
+    runtime.copyTranslation = copyTranslation;
+    runtime.pasteTranslation = pasteTranslation;
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="Version 1.0"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+
+    expect(await screen.findByRole("heading", { name: "质量风险" })).toBeInTheDocument();
+    expect(screen.getByText("数字的数量或原值与源文不一致。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
+    expect(pasteTranslation).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "复制译文" }));
+    expect(
+      screen.getByRole("dialog", { name: "确认复制风险译文" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+    expect(copyTranslation).toHaveBeenCalledWith("task-risk");
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: "确认复制风险译文" }),
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "复制译文" })).toHaveFocus(),
+    );
+    await user.click(screen.getByRole("button", { name: "复制译文" }));
+    await user.click(screen.getByRole("button", { name: "确认并复制" }));
+    expect(copyTranslation).toHaveBeenLastCalledWith("task-risk", true);
+    expect(screen.getByText("译文已复制。")).toBeInTheDocument();
+  });
+
+  it("keeps heuristic warnings non-blocking for copy and paste", async () => {
+    const user = userEvent.setup();
+    const copyTranslation = vi.fn(() => ({ status: "copied" as const }));
+    const pasteTranslation = vi.fn(() => ({ status: "pasted" as const }));
+    const runtime = createRuntimeForBoundary();
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-warning",
+      translation: "译文",
+      quality: {
+        pasteBlocked: false,
+        risks: [
+          {
+            id: "quality-warning",
+            code: "fluency.review",
+            category: "fluency",
+            severity: "major",
+            certainty: "heuristic",
+            message: "这处表达可能不够自然，请人工复核。",
+          },
+        ],
+      },
+    });
+    runtime.copyTranslation = copyTranslation;
+    runtime.pasteTranslation = pasteTranslation;
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+    expect(await screen.findByText("这处表达可能不够自然，请人工复核。")).toBeInTheDocument();
+    const pasteButton = screen.getByRole("button", { name: "粘贴回原窗口" });
+    expect(pasteButton).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "复制译文" }));
+    await user.click(pasteButton);
+
+    expect(copyTranslation).toHaveBeenCalledWith("task-warning");
+    expect(pasteTranslation).toHaveBeenCalledWith("task-warning", "source");
+    expect(
+      screen.queryByRole("dialog", { name: "确认复制风险译文" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps an old translation visible but disables paste after the source changes", async () => {
+    const user = userEvent.setup();
+    const runtime = createRuntimeForBoundary();
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "completed",
+      taskId: "task-stale",
+      translation: "旧译文",
+      quality: { risks: [], pasteBlocked: false },
+    });
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="old source"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+    expect(await screen.findByRole("region", { name: "译文" })).toHaveTextContent(
+      "旧译文",
+    );
+
+    const source = screen.getByRole("textbox", { name: "源文本" });
+    await user.clear(source);
+    await user.type(source, "new source");
+
+    expect(screen.getByRole("region", { name: "译文" })).toHaveTextContent("旧译文");
+    expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
+    expect(screen.getByText(/源文本已修改/u)).toBeInTheDocument();
+  });
+
+  it("keeps an incomplete partial translation and allows confirmed copy only", async () => {
+    const user = userEvent.setup();
+    const copyTranslation = vi
+      .fn()
+      .mockReturnValueOnce({ status: "confirmation_required" as const })
+      .mockReturnValueOnce({ status: "copied" as const });
+    const runtime = createRuntimeForBoundary();
+    runtime.startStandardTranslation = vi.fn().mockResolvedValue({
+      status: "failed",
+      taskId: "task-partial-risk",
+      sourceRetained: true,
+      partialTranslation: "部分译文",
+      error: { code: "protocol_error", message: "响应未正常结束。" },
+      quality: {
+        pasteBlocked: true,
+        risks: [
+          {
+            id: "quality-stream",
+            code: "stream.incomplete",
+            category: "stream",
+            severity: "critical",
+            certainty: "deterministic",
+            message: "模型响应没有按所选协议正常结束，现有译文可能不完整。",
+          },
+        ],
+      },
+    });
+    runtime.copyTranslation = copyTranslation;
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+
+    expect(await screen.findByRole("region", { name: "部分译文" })).toHaveTextContent(
+      "部分译文",
+    );
+    expect(screen.getByText(/没有按所选协议正常结束/u)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "粘贴回原窗口" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "复制部分译文" }));
+    await user.click(screen.getByRole("button", { name: "确认并复制" }));
+    expect(copyTranslation).toHaveBeenNthCalledWith(1, "task-partial-risk");
+    expect(copyTranslation).toHaveBeenNthCalledWith(2, "task-partial-risk", true);
   });
 
   it("shows streamed deltas, exposes cancellation, and keeps partial text on cancel", async () => {
@@ -342,6 +543,8 @@ describe("ConfiguredTranslationPage", () => {
           error: { code: "cancelled", message: "翻译已取消。" },
         });
       }),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
 
     render(
@@ -386,6 +589,8 @@ describe("ConfiguredTranslationPage", () => {
       saveApiKey: vi.fn(),
       startStandardTranslation,
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
 
     render(
@@ -425,6 +630,7 @@ describe("ConfiguredTranslationPage", () => {
         status: "completed",
         taskId: "first",
         translation: "旧译文",
+        quality: { risks: [], pasteBlocked: false },
       })
       .mockImplementationOnce((_request, onProgress) => {
         onProgress?.({ type: "started", taskId: "second" });
@@ -435,6 +641,8 @@ describe("ConfiguredTranslationPage", () => {
       saveApiKey: vi.fn(),
       startStandardTranslation,
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
     };
 
     render(
@@ -492,5 +700,7 @@ function createRuntimeForBoundary(): RuyiRuntimeBridge {
     saveApiKey: vi.fn(),
     startStandardTranslation: vi.fn(),
     cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
   };
 }

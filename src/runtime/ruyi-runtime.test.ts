@@ -305,11 +305,14 @@ describe("Ruyi runtime", () => {
         ].join("\n"),
       }),
     };
+    const copyText = vi.fn(() => true);
+    const pasteText = vi.fn(() => true);
     const runtime = createRuyiRuntime({
       plainStorage,
       cryptoStorage,
       transport,
       tokenFactory: () => "confirmation-send",
+      hostActions: { copyText, pasteText },
     });
     await runtime.saveApiKey(credentialForm(apiKeyFixture));
     const request = {
@@ -333,6 +336,7 @@ describe("Ruyi runtime", () => {
       status: "completed",
       taskId: "task-send",
       translation: "你好",
+      quality: { risks: [], pasteBlocked: false },
     });
     expect(transport.request).toHaveBeenCalledOnce();
     const sent = transport.request.mock.calls[0][0];
@@ -378,6 +382,159 @@ describe("Ruyi runtime", () => {
     expect(JSON.stringify([...plainStorage.values.values()])).not.toContain(
       request.sourceText,
     );
+    expect(runtime.copyTranslation("task-send")).toEqual({ status: "copied" });
+    expect(runtime.pasteTranslation("task-send", request.sourceText)).toEqual({
+      status: "pasted",
+    });
+    expect(runtime.pasteTranslation("task-send", "edited source")).toEqual({
+      status: "blocked",
+    });
+    expect(copyText).toHaveBeenCalledWith("你好");
+    expect(pasteText).toHaveBeenCalledWith("你好");
+  });
+
+  it("keeps a translation and reports concrete protected-content risks", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = {
+      request: vi.fn().mockResolvedValue({
+        status: 200,
+        headers: {},
+        body: [
+          'data: {"choices":[{"delta":{"content":"版本 2.0，访问 https://bad.test"}}]}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"),
+      }),
+    };
+    const copyText = vi.fn(() => true);
+    const pasteText = vi.fn(() => true);
+    const runtime = createRuyiRuntime({
+      plainStorage,
+      cryptoStorage,
+      transport,
+      hostActions: { copyText, pasteText },
+    });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+    const sourceText = "Version 1.0, visit https://good.test";
+
+    const result = await runtime.startStandardTranslation({
+      taskId: "task-quality-risk",
+      sourceText,
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      translation: "版本 2.0，访问 https://bad.test",
+      quality: {
+        pasteBlocked: true,
+        risks: expect.arrayContaining([
+          expect.objectContaining({ code: "protected.number.mismatch" }),
+          expect.objectContaining({ code: "protected.url.mismatch" }),
+        ]),
+      },
+    });
+    const sentInput = JSON.parse(
+      JSON.parse(transport.request.mock.calls[0][0].body).messages[1].content,
+    );
+    expect(sentInput.protectedItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "number",
+          sourceValue: "1.0",
+        }),
+        expect.objectContaining({
+          type: "url",
+          sourceValue: "https://good.test",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(result.quality)).not.toContain(sourceText);
+    expect(JSON.stringify(result.quality)).not.toContain(result.translation);
+    expect(runtime.pasteTranslation("task-quality-risk", sourceText)).toEqual({
+      status: "blocked",
+    });
+    expect(runtime.copyTranslation("task-quality-risk")).toEqual({
+      status: "confirmation_required",
+    });
+    expect(copyText).not.toHaveBeenCalled();
+    expect(pasteText).not.toHaveBeenCalled();
+    expect(Object.isFrozen(result.quality)).toBe(true);
+    expect(Object.isFrozen(result.quality.risks)).toBe(true);
+    expect(runtime.copyTranslation("task-quality-risk", true)).toEqual({
+      status: "copied",
+    });
+    expect(copyText).toHaveBeenCalledWith("版本 2.0，访问 https://bad.test");
+  });
+
+  it("keeps partial text and reports an incomplete stream as a quality risk", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = {
+      request: vi.fn().mockResolvedValue({
+        status: 200,
+        headers: {},
+        body: 'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n',
+        complete: true,
+      }),
+    };
+    const copyText = vi.fn(() => true);
+    const runtime = createRuyiRuntime({
+      plainStorage,
+      cryptoStorage,
+      transport,
+      hostActions: { copyText },
+    });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+
+    const result = await runtime.startStandardTranslation({
+      taskId: "task-incomplete-quality",
+      sourceText: "Hello",
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      partialTranslation: "你好",
+      error: { code: "protocol_error" },
+      quality: {
+        pasteBlocked: true,
+        risks: expect.arrayContaining([
+          expect.objectContaining({ code: "stream.incomplete" }),
+        ]),
+      },
+    });
+    expect(runtime.copyTranslation("task-incomplete-quality")).toEqual({
+      status: "confirmation_required",
+    });
+    expect(runtime.copyTranslation("task-incomplete-quality", true)).toEqual({
+      status: "copied",
+    });
+    expect(copyText).toHaveBeenCalledWith("你好");
   });
 
   it("streams text progress and cancels the previous in-flight task", async () => {
@@ -454,6 +611,7 @@ describe("Ruyi runtime", () => {
       status: "completed",
       taskId: "task-second",
       translation: "你好",
+      quality: { risks: [], pasteBlocked: false },
     });
     expect(progress).toHaveBeenCalledWith({
       type: "started",
@@ -617,6 +775,7 @@ describe("Ruyi runtime", () => {
       status: "completed",
       taskId: "task-observer",
       translation: "ok",
+      quality: { risks: [], pasteBlocked: false },
     });
   });
 
@@ -722,5 +881,44 @@ describe("Ruyi runtime", () => {
       error: { code, httpStatus: status, requestId: "safe-request-id" },
     });
     expect(JSON.stringify(result)).not.toContain("secret upstream details");
+  });
+
+  it("never exposes a transport-provided message containing source text", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const sourceText = "SECRET SOURCE FULL TEXT";
+    const transport = {
+      request: vi.fn().mockRejectedValue(
+        Object.assign(new Error("external failure"), {
+          code: "network_error",
+          safeMessage: sourceText,
+        }),
+      ),
+    };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+
+    const result = await runtime.startStandardTranslation({
+      taskId: "task-sanitized-transport-message",
+      sourceText,
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      error: { code: "network_error" },
+    });
+    expect(JSON.stringify(result)).not.toContain(sourceText);
   });
 });

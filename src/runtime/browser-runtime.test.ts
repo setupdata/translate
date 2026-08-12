@@ -14,6 +14,8 @@ describe("getBrowserRuntime", () => {
       saveApiKey: vi.fn(),
       startStandardTranslation: vi.fn(),
       cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(),
+      pasteTranslation: vi.fn(),
     };
     window.ruyiTranslation = bridge;
 
