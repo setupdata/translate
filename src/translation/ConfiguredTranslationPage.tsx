@@ -20,11 +20,13 @@ type ConfiguredTranslationPageProps = {
 
 type StartTranslationOptions = {
   confirmationToken?: string;
+  referencePreviewToken?: string;
   beginNewTask?: boolean;
   targetLanguage: TargetLanguage;
   domainProfileId: string | null;
   additionalRequirements: string;
   taskTerms: TaskTerm[];
+  referenceTranslationIds: string[] | null;
 };
 
 function createTaskId(): string {
@@ -51,6 +53,7 @@ function buildCurrentInputs(
   domainProfileId: string | null,
   additionalRequirements: string,
   taskTerms: TaskTerm[],
+  referenceTranslationIds: string[] | null,
 ): CurrentTranslationInputs {
   return {
     sourceText,
@@ -60,6 +63,7 @@ function buildCurrentInputs(
     qualityMode: "standard",
     additionalRequirements,
     taskTerms,
+    referenceTranslationIds,
   };
 }
 
@@ -74,6 +78,8 @@ export function ConfiguredTranslationPage({
   );
   const [additionalRequirements, setAdditionalRequirements] = useState("");
   const [taskTerms, setTaskTerms] = useState<TaskTerm[]>([]);
+  const [referenceTranslationIds, setReferenceTranslationIds] = useState<string[] | null>(null);
+  const [referencePreviewSelection, setReferencePreviewSelection] = useState<string[]>([]);
   const [domainProfiles, setDomainProfiles] = useState<TerminologyState["domainProfiles"]>([]);
   const [domainProfileId, setDomainProfileId] = useState<string | null>(null);
   const [configuration, setConfiguration] =
@@ -96,6 +102,7 @@ export function ConfiguredTranslationPage({
   const mounted = useRef(true);
   const riskCopyTrigger = useRef<HTMLButtonElement | null>(null);
   const riskCopyCancel = useRef<HTMLButtonElement | null>(null);
+  const referencePreviewCancel = useRef<HTMLButtonElement | null>(null);
   const restoreRiskCopyFocus = useRef(false);
 
   const applyCurrentSnapshot = useCallback(
@@ -105,6 +112,8 @@ export function ConfiguredTranslationPage({
         setTargetLanguage(INITIAL_TARGET_LANGUAGE);
         setAdditionalRequirements("");
         setTaskTerms([]);
+        setReferenceTranslationIds(null);
+        setReferencePreviewSelection([]);
         setDomainProfileId(null);
         setResult(null);
         setPartialTranslation("");
@@ -118,8 +127,14 @@ export function ConfiguredTranslationPage({
       setTargetLanguage(snapshot.inputs.targetLanguage);
       setAdditionalRequirements(snapshot.inputs.additionalRequirements);
       setTaskTerms(snapshot.inputs.taskTerms);
+      setReferenceTranslationIds(snapshot.inputs.referenceTranslationIds);
       setDomainProfileId(snapshot.inputs.domainProfileId ?? null);
       setResult(snapshot.result);
+      setReferencePreviewSelection(
+        snapshot.result?.status === "reference_confirmation_required"
+          ? snapshot.result.referenceTranslations.map((reference) => reference.id)
+          : [],
+      );
       setPartialTranslation(snapshot.partialTranslation);
       setIsTranslating(snapshot.phase === "translating");
       setSnapshotStale(snapshot.stale);
@@ -138,6 +153,7 @@ export function ConfiguredTranslationPage({
       serviceConfigurationId = configuration?.serviceConfiguration?.id ?? null,
       selectedDomainProfileId = domainProfileId,
       selectedTaskTerms = taskTerms,
+      selectedReferenceTranslationIds = referenceTranslationIds,
     ): CurrentTranslationInputs =>
       buildCurrentInputs(
         source,
@@ -146,6 +162,7 @@ export function ConfiguredTranslationPage({
         selectedDomainProfileId,
         requirements,
         selectedTaskTerms,
+        selectedReferenceTranslationIds,
       ),
     [
       additionalRequirements,
@@ -154,20 +171,34 @@ export function ConfiguredTranslationPage({
       sourceText,
       targetLanguage,
       taskTerms,
+      referenceTranslationIds,
     ],
   );
 
   const publishInputs = useCallback(
     (inputs: CurrentTranslationInputs) => {
+      if (
+        result?.status === "confirmation_required" ||
+        result?.status === "reference_confirmation_required"
+      ) {
+        runtime.cancelTranslation(taskId.current);
+        setResult(null);
+      }
       setSnapshotStale(runtime.updateCurrentTranslationInputs(inputs).stale);
     },
-    [runtime],
+    [result, runtime],
   );
 
   const closeRiskCopy = useCallback(() => {
     restoreRiskCopyFocus.current = true;
     setConfirmRiskCopy(false);
   }, []);
+
+  const cancelReferencePreview = useCallback(() => {
+    runtime.cancelTranslation(taskId.current);
+    setResult(null);
+    setReferencePreviewSelection([]);
+  }, [runtime]);
 
   useEffect(() => {
     mounted.current = true;
@@ -213,6 +244,9 @@ export function ConfiguredTranslationPage({
         setAdditionalRequirements(options.additionalRequirements);
         setTaskTerms(options.taskTerms);
         setDomainProfileId(options.domainProfileId);
+        setReferenceTranslationIds(options.referenceTranslationIds);
+      } else if (options.referencePreviewToken) {
+        setReferenceTranslationIds(options.referenceTranslationIds);
       }
       const generation = ++requestGeneration.current;
       setResult(null);
@@ -226,6 +260,7 @@ export function ConfiguredTranslationPage({
         options.domainProfileId,
         options.additionalRequirements,
         options.taskTerms,
+        options.referenceTranslationIds,
       );
       try {
         const nextResult = await runtime.startStandardTranslation({
@@ -236,6 +271,8 @@ export function ConfiguredTranslationPage({
           domainProfileId: options.domainProfileId,
           additionalRequirements: options.additionalRequirements,
           taskTerms: submittedInputs.taskTerms,
+          referenceTranslationIds: submittedInputs.referenceTranslationIds,
+          referencePreviewToken: options.referencePreviewToken,
           confirmationToken: options.confirmationToken,
         }, (event) => {
           if (!mounted.current || generation !== requestGeneration.current) {
@@ -256,6 +293,11 @@ export function ConfiguredTranslationPage({
             nextResult.partialTranslation
           ) {
             setPartialTranslation(nextResult.partialTranslation);
+          }
+          if (nextResult.status === "reference_confirmation_required") {
+            setReferencePreviewSelection(
+              nextResult.referenceTranslations.map((reference) => reference.id),
+            );
           }
           setResult(nextResult);
         }
@@ -287,12 +329,15 @@ export function ConfiguredTranslationPage({
         previousInputs?.domainProfileId ?? null,
         previousInputs?.additionalRequirements ?? "",
         [],
+        null,
       );
       runtime.updateCurrentTranslationInputs(replacementInputs);
       setSourceText(replacementInputs.sourceText);
       setTargetLanguage(replacementInputs.targetLanguage);
       setAdditionalRequirements(replacementInputs.additionalRequirements);
       setTaskTerms(replacementInputs.taskTerms);
+      setReferenceTranslationIds(null);
+      setReferencePreviewSelection([]);
       setResult(null);
       setPartialTranslation("");
       setIsTranslating(false);
@@ -338,6 +383,7 @@ export function ConfiguredTranslationPage({
               domainProfileId: selectedDomainProfileId,
               additionalRequirements: autoRequirements,
               taskTerms: autoTaskTerms,
+              referenceTranslationIds: null,
             },
           );
         } else if (!runtime.getCurrentTranslation()) {
@@ -351,6 +397,7 @@ export function ConfiguredTranslationPage({
             qualityMode: "standard",
             additionalRequirements: state.defaults.additionalRequirements,
             taskTerms: [],
+            referenceTranslationIds: null,
           });
         }
       })
@@ -381,6 +428,8 @@ export function ConfiguredTranslationPage({
     result.reason === "missing_api_key";
   const confirmation =
     result?.status === "confirmation_required" ? result : null;
+  const referenceConfirmation =
+    result?.status === "reference_confirmation_required" ? result : null;
   const quality =
     result?.status === "completed" || result?.status === "failed"
       ? result.quality
@@ -398,6 +447,7 @@ export function ConfiguredTranslationPage({
         configuration?.serviceConfiguration?.id ?? null,
         domainProfileId,
         nextTaskTerms,
+        referenceTranslationIds,
       ),
     );
   }
@@ -433,6 +483,19 @@ export function ConfiguredTranslationPage({
     return () => window.removeEventListener("keydown", handleRiskDialogEscape);
   }, [closeRiskCopy, confirmRiskCopy]);
 
+  useEffect(() => {
+    if (!referenceConfirmation) return undefined;
+    referencePreviewCancel.current?.focus();
+    function handleReferencePreviewEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelReferencePreview();
+      }
+    }
+    window.addEventListener("keydown", handleReferencePreviewEscape);
+    return () => window.removeEventListener("keydown", handleReferencePreviewEscape);
+  }, [cancelReferencePreview, referenceConfirmation]);
+
   return (
     <main>
       <h1>如意翻译</h1>
@@ -457,6 +520,7 @@ export function ConfiguredTranslationPage({
               domainProfileId,
               additionalRequirements,
               taskTerms,
+              referenceTranslationIds: null,
             });
           }
         }}
@@ -469,7 +533,10 @@ export function ConfiguredTranslationPage({
               value={configuration?.serviceConfiguration?.id ?? ""}
               onChange={(event) => {
                 const configurationId = event.target.value;
-                if (result?.status === "confirmation_required") {
+                if (
+                  result?.status === "confirmation_required" ||
+                  result?.status === "reference_confirmation_required"
+                ) {
                   runtime.cancelTranslation(taskId.current);
                   setResult(null);
                 }
@@ -521,6 +588,7 @@ export function ConfiguredTranslationPage({
             const nextDomainProfileId = event.target.value || null;
             deferredActionGeneration.current += 1;
             setDomainProfileId(nextDomainProfileId);
+            setReferenceTranslationIds(null);
             void runtime
               .setCurrentDomainProfile(nextDomainProfileId)
               .then((terminology) => {
@@ -530,6 +598,7 @@ export function ConfiguredTranslationPage({
                 publishInputs({
                   ...(latestInputs ?? currentInputs()),
                   domainProfileId: nextDomainProfileId,
+                  referenceTranslationIds: null,
                 });
               })
               .catch(() => {
@@ -552,7 +621,18 @@ export function ConfiguredTranslationPage({
             const nextSourceText = event.target.value;
             deferredActionGeneration.current += 1;
             setSourceText(nextSourceText);
-            publishInputs(currentInputs(nextSourceText));
+            setReferenceTranslationIds(null);
+            publishInputs(
+              currentInputs(
+                nextSourceText,
+                targetLanguage,
+                additionalRequirements,
+                configuration?.serviceConfiguration?.id ?? null,
+                domainProfileId,
+                taskTerms,
+                null,
+              ),
+            );
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -567,6 +647,7 @@ export function ConfiguredTranslationPage({
                     domainProfileId,
                     additionalRequirements,
                     taskTerms,
+                    referenceTranslationIds: null,
                   },
                 );
               }
@@ -584,7 +665,18 @@ export function ConfiguredTranslationPage({
               ) ?? INITIAL_TARGET_LANGUAGE;
             deferredActionGeneration.current += 1;
             setTargetLanguage(nextTargetLanguage);
-            publishInputs(currentInputs(sourceText, nextTargetLanguage));
+            setReferenceTranslationIds(null);
+            publishInputs(
+              currentInputs(
+                sourceText,
+                nextTargetLanguage,
+                additionalRequirements,
+                configuration?.serviceConfiguration?.id ?? null,
+                domainProfileId,
+                taskTerms,
+                null,
+              ),
+            );
           }}
         >
           {TARGET_LANGUAGES.map((language) => (
@@ -769,6 +861,7 @@ export function ConfiguredTranslationPage({
                     domainProfileId,
                     additionalRequirements,
                     taskTerms,
+                    referenceTranslationIds,
                   });
                 })
                 .catch(() => {
@@ -790,6 +883,71 @@ export function ConfiguredTranslationPage({
             />
             <button type="submit">保存密钥</button>
           </form>
+        </section>
+      ) : null}
+
+      {referenceConfirmation ? (
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reference-confirmation-heading"
+          className="confirmation-card"
+        >
+          <h2 id="reference-confirmation-heading">确认参考译例</h2>
+          <p>
+            以下译例由本地文本相似度选出。只有勾选的译例会随本次请求发送，最多三条。
+          </p>
+          <fieldset>
+            <legend>本次发送的参考译例</legend>
+            {referenceConfirmation.referenceTranslations.map((reference, index) => (
+              <label className="reference-translation-choice" key={reference.id}>
+                <input
+                  type="checkbox"
+                  aria-label={`使用参考译例 ${index + 1}`}
+                  checked={referencePreviewSelection.includes(reference.id)}
+                  onChange={(event) => {
+                    setReferencePreviewSelection((current) =>
+                      event.target.checked
+                        ? [...current, reference.id]
+                        : current.filter((id) => id !== reference.id),
+                    );
+                  }}
+                />
+                <span>
+                  <strong>{reference.source}</strong>
+                  <span>{reference.translation}</span>
+                  <small>
+                    {reference.sourceLanguage} → {reference.targetLanguage}
+                  </small>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <div className="dialog-actions">
+            <button
+              ref={referencePreviewCancel}
+              type="button"
+              onClick={cancelReferencePreview}
+            >
+              取消本次翻译
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!configuration) return;
+                void startTranslation(configuration, sourceText, {
+                  referencePreviewToken: referenceConfirmation.previewToken,
+                  targetLanguage,
+                  domainProfileId,
+                  additionalRequirements,
+                  taskTerms,
+                  referenceTranslationIds: referencePreviewSelection,
+                });
+              }}
+            >
+              按所选译例继续
+            </button>
+          </div>
         </section>
       ) : null}
 
@@ -839,6 +997,7 @@ export function ConfiguredTranslationPage({
                       domainProfileId,
                       additionalRequirements,
                       taskTerms,
+                      referenceTranslationIds,
                     },
                   );
                 }

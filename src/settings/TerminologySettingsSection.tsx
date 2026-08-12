@@ -2,11 +2,15 @@ import { useEffect, useRef, useState } from "react";
 
 import type {
   DomainProfile,
+  ReferenceTranslation,
   RuyiRuntimeBridge,
   Termbase,
+  TermbaseCsvPreview,
   TermEntry,
   TerminologyState,
 } from "../runtime/contracts";
+
+const MAX_CSV_FILE_BYTES = 5 * 1024 * 1024;
 
 function emptyTerm(): TermEntry {
   return {
@@ -43,6 +47,32 @@ function emptyDomainProfile(): DomainProfile {
   };
 }
 
+function emptyReferenceTranslation(domainProfileId = ""): ReferenceTranslation {
+  return {
+    id: null,
+    domainProfileId,
+    sourceLanguage: "",
+    targetLanguage: "",
+    source: "",
+    translation: "",
+  };
+}
+
+function readFileBytes(file: File): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("无法读取 CSV 文件。"));
+    reader.onload = () => {
+      if (!(reader.result instanceof ArrayBuffer)) {
+        reject(new Error("无法读取 CSV 文件。"));
+        return;
+      }
+      resolve(new Uint8Array(reader.result));
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 function lines(value: string): string[] {
   return value
     .split(/\r?\n/u)
@@ -66,16 +96,24 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
   const [state, setState] = useState<TerminologyState | null>(null);
   const [editingTermbase, setEditingTermbase] = useState<Termbase | null>(null);
   const [editingProfile, setEditingProfile] = useState<DomainProfile | null>(null);
+  const [editingReference, setEditingReference] = useState<ReferenceTranslation | null>(null);
+  const [csvPreview, setCsvPreview] = useState<
+    (TermbaseCsvPreview & { termbaseId: string; termbaseName: string }) | null
+  >(null);
+  const [csvBytes, setCsvBytes] = useState<Uint8Array | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [pendingDeletion, setPendingDeletion] = useState<{
-    kind: "termbase" | "domainProfile";
+    kind: "termbase" | "domainProfile" | "referenceTranslation";
     id: string;
     name: string;
   } | null>(null);
   const deleteTrigger = useRef<HTMLButtonElement | null>(null);
   const deleteCancel = useRef<HTMLButtonElement | null>(null);
   const restoreDeleteFocus = useRef(false);
+  const csvImportTrigger = useRef<HTMLInputElement | null>(null);
+  const csvCancel = useRef<HTMLButtonElement | null>(null);
+  const restoreCsvFocus = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -100,6 +138,22 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
       deleteTrigger.current?.focus();
     }
   }, [pendingDeletion]);
+
+  useEffect(() => {
+    const previewToken = csvPreview?.previewToken;
+    return () => {
+      if (previewToken) runtime.discardTermbaseCsvPreview(previewToken);
+    };
+  }, [csvPreview?.previewToken, runtime]);
+
+  useEffect(() => {
+    if (csvPreview) {
+      csvCancel.current?.focus();
+    } else if (restoreCsvFocus.current) {
+      restoreCsvFocus.current = false;
+      csvImportTrigger.current?.focus();
+    }
+  }, [csvPreview]);
 
   function cancelDeletion() {
     restoreDeleteFocus.current = true;
@@ -126,6 +180,10 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
     setEditingProfile((current) => (current ? { ...current, ...patch } : current));
   }
 
+  function mutateReference(patch: Partial<ReferenceTranslation>) {
+    setEditingReference((current) => (current ? { ...current, ...patch } : current));
+  }
+
   async function run(action: () => Promise<TerminologyState>, success: string) {
     setError("");
     setStatus("");
@@ -136,6 +194,83 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
     } catch (operationError) {
       setError(errorMessage(operationError));
       return false;
+    }
+  }
+
+  async function previewCsv(termbase: Termbase & { id: string }, file: File) {
+    setError("");
+    setStatus("");
+    if (file.size > MAX_CSV_FILE_BYTES) {
+      setError("CSV 文件不能超过 5 MiB。");
+      return;
+    }
+    try {
+      const bytes = await readFileBytes(file);
+      const preview = await runtime.previewTermbaseCsv({
+        termbaseId: termbase.id,
+        bytes,
+      });
+      setCsvBytes(bytes);
+      setCsvPreview({ ...preview, termbaseId: termbase.id, termbaseName: termbase.name });
+    } catch (previewError) {
+      setError(errorMessage(previewError));
+    }
+  }
+
+  async function remapCsv(field: string, column: string) {
+    if (!csvPreview || !csvBytes) return;
+    setError("");
+    const nextMapping = { ...csvPreview.fieldMapping, [field]: column || null };
+    const requestMapping = Object.fromEntries(
+      Object.entries(nextMapping).map(([mappingField, mappedColumn]) => [
+        mappingField,
+        mappedColumn ?? "",
+      ]),
+    );
+    try {
+      const preview = await runtime.previewTermbaseCsv({
+        termbaseId: csvPreview.termbaseId,
+        bytes: csvBytes,
+        mapping: requestMapping,
+      });
+      setCsvPreview({
+        ...preview,
+        termbaseId: csvPreview.termbaseId,
+        termbaseName: csvPreview.termbaseName,
+      });
+    } catch (mappingError) {
+      setError(errorMessage(mappingError));
+    }
+  }
+
+  function cancelCsvPreview() {
+    if (csvPreview?.previewToken) {
+      runtime.discardTermbaseCsvPreview(csvPreview.previewToken);
+    }
+    restoreCsvFocus.current = true;
+    setCsvBytes(null);
+    setCsvPreview(null);
+  }
+
+  async function exportCsv(termbaseId: string) {
+    setError("");
+    setStatus("");
+    try {
+      const exported = await runtime.exportTermbaseCsv(termbaseId);
+      const bytes = Uint8Array.from(exported.bytes);
+      const url = URL.createObjectURL(
+        new Blob([bytes.buffer], { type: "text/csv;charset=utf-8" }),
+      );
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = exported.fileName;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`已导出 ${exported.fileName}。`);
+    } catch (exportError) {
+      setError(errorMessage(exportError));
     }
   }
 
@@ -173,6 +308,30 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
                     </p>
                   </div>
                   <div className="compact-actions">
+                    <label className="file-action">
+                      导入 CSV
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        aria-label={`导入 CSV ${termbase.name}`}
+                        onChange={(event) => {
+                          const input = event.currentTarget;
+                          const file = input.files?.[0];
+                          if (!file) return;
+                          csvImportTrigger.current = input;
+                          void previewCsv(termbase, file).finally(() => {
+                            input.value = "";
+                          });
+                        }}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      aria-label={`导出 CSV ${termbase.name}`}
+                      onClick={() => void exportCsv(termbase.id)}
+                    >
+                      导出 CSV
+                    </button>
                     <button
                       type="button"
                       aria-label={`编辑术语库 ${termbase.name}`}
@@ -539,6 +698,214 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
               </form>
             </div>
           )}
+
+          <div className="settings-heading-row">
+            <div>
+              <h3>参考译例</h3>
+              <p>参考译例必须由你明确保存，并与一个行业配置及语言方向关联。</p>
+            </div>
+            <button
+              type="button"
+              disabled={state.domainProfiles.length === 0}
+              onClick={() =>
+                setEditingReference(
+                  emptyReferenceTranslation(
+                    state.currentDomainProfileId ?? state.domainProfiles[0]?.id ?? "",
+                  ),
+                )
+              }
+            >
+              新增参考译例
+            </button>
+          </div>
+          {state.referenceTranslations.length === 0 ? (
+            <p>还没有参考译例。</p>
+          ) : (
+            <ul className="service-configuration-list" aria-label="参考译例列表">
+              {state.referenceTranslations.map((reference) => {
+                const profileName =
+                  state.domainProfiles.find((profile) => profile.id === reference.domainProfileId)
+                    ?.name ?? "已删除的行业配置";
+                return (
+                  <li className="service-configuration-card" key={reference.id}>
+                    <div>
+                      <h4>{reference.source}</h4>
+                      <p>{reference.translation}</p>
+                      <p>
+                        {profileName} · {reference.sourceLanguage} → {reference.targetLanguage}
+                      </p>
+                    </div>
+                    <div className="compact-actions">
+                      <button
+                        type="button"
+                        aria-label={`编辑参考译例 ${reference.source}`}
+                        onClick={() => setEditingReference(structuredClone(reference))}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`删除参考译例 ${reference.source}`}
+                        onClick={(event) => {
+                          deleteTrigger.current = event.currentTarget;
+                          setPendingDeletion({
+                            kind: "referenceTranslation",
+                            id: reference.id,
+                            name: reference.source,
+                          });
+                        }}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {editingReference && (
+            <div className="configuration-card terminology-editor">
+              <h3>{editingReference.id ? "编辑参考译例" : "新增参考译例"}</h3>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void run(
+                    () => runtime.saveReferenceTranslation(editingReference),
+                    "参考译例已保存。",
+                  ).then((saved) => {
+                    if (saved) setEditingReference(null);
+                  });
+                }}
+              >
+                <label htmlFor="reference-domain-profile">关联行业配置</label>
+                <select
+                  id="reference-domain-profile"
+                  value={editingReference.domainProfileId}
+                  onChange={(event) =>
+                    mutateReference({ domainProfileId: event.target.value })
+                  }
+                >
+                  {state.domainProfiles.map((profile) => (
+                    <option value={profile.id} key={profile.id}>
+                      {profile.name}
+                    </option>
+                  ))}
+                </select>
+                <label htmlFor="reference-source-language">参考源语言</label>
+                <input
+                  id="reference-source-language"
+                  value={editingReference.sourceLanguage}
+                  onChange={(event) =>
+                    mutateReference({ sourceLanguage: event.target.value })
+                  }
+                />
+                <label htmlFor="reference-target-language">参考目标语言</label>
+                <input
+                  id="reference-target-language"
+                  value={editingReference.targetLanguage}
+                  onChange={(event) =>
+                    mutateReference({ targetLanguage: event.target.value })
+                  }
+                />
+                <label htmlFor="reference-source">参考源文本</label>
+                <textarea
+                  id="reference-source"
+                  value={editingReference.source}
+                  onChange={(event) => mutateReference({ source: event.target.value })}
+                />
+                <label htmlFor="reference-translation">参考译文</label>
+                <textarea
+                  id="reference-translation"
+                  value={editingReference.translation}
+                  onChange={(event) => mutateReference({ translation: event.target.value })}
+                />
+                <div className="dialog-actions">
+                  <button type="button" onClick={() => setEditingReference(null)}>
+                    取消
+                  </button>
+                  <button type="submit">保存参考译例</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {csvPreview && (
+            <section
+              className="configuration-card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="csv-preview-heading"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelCsvPreview();
+                }
+              }}
+            >
+              <h3 id="csv-preview-heading">预览术语 CSV 导入</h3>
+              <p>
+                将导入到“{csvPreview.termbaseName}”：{csvPreview.rowCount} 条可导入记录
+              </p>
+              <h4>字段映射</h4>
+              <div className="csv-field-mapping">
+                {[...csvPreview.requiredFields, ...csvPreview.optionalFields].map((field) => (
+                  <label key={field}>
+                    {field}
+                    {csvPreview.requiredFields.includes(field) ? "（必填）" : "（可选）"}
+                    <select
+                      aria-label={`CSV 字段 ${field}`}
+                      value={csvPreview.fieldMapping[field] ?? ""}
+                      onChange={(event) => void remapCsv(field, event.target.value)}
+                    >
+                      <option value="">未映射</option>
+                      {csvPreview.columns.map((column) => (
+                        <option value={column} key={column}>
+                          {column}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              {csvPreview.issues.length > 0 ? (
+                <>
+                  <h4>发现的问题</h4>
+                  <ul aria-label="CSV 导入问题">
+                    {csvPreview.issues.map((issue, index) => (
+                      <li key={`${issue.row}:${issue.field ?? "row"}:${index}`}>
+                        第 {issue.row} 行{issue.field ? ` · ${issue.field}` : ""}：
+                        {issue.message}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p role="status">未发现重复、冲突、语言方向或字段错误。</p>
+              )}
+              <div className="dialog-actions">
+                <button ref={csvCancel} type="button" onClick={cancelCsvPreview}>
+                  取消导入
+                </button>
+                <button
+                  type="button"
+                  disabled={!csvPreview.canImport || !csvPreview.previewToken}
+                  onClick={() => {
+                    if (!csvPreview.previewToken) return;
+                    const previewToken = csvPreview.previewToken;
+                    void run(
+                      () => runtime.commitTermbaseCsv(previewToken),
+                      `已将 CSV 整体导入“${csvPreview.termbaseName}”。`,
+                    ).then((imported) => {
+                      if (imported) setCsvPreview(null);
+                    });
+                  }}
+                >
+                  确认整体导入
+                </button>
+              </div>
+            </section>
+          )}
           {pendingDeletion && (
             <section
               className="configuration-card"
@@ -555,13 +922,17 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
               <h3 id="terminology-delete-heading">
                 {pendingDeletion.kind === "termbase"
                   ? "确认删除术语库"
-                  : "确认删除行业配置"}
+                  : pendingDeletion.kind === "domainProfile"
+                    ? "确认删除行业配置"
+                    : "确认删除参考译例"}
               </h3>
               <p>
                 删除“{pendingDeletion.name}”后无法撤销。
                 {pendingDeletion.kind === "termbase"
                   ? "引用它的行业配置也会解除关联。"
-                  : ""}
+                  : pendingDeletion.kind === "domainProfile"
+                    ? "与它关联的参考译例也会一并删除。"
+                    : ""}
               </p>
               <div className="dialog-actions">
                 <button ref={deleteCancel} type="button" onClick={cancelDeletion}>
@@ -575,10 +946,14 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
                       () =>
                         deletion.kind === "termbase"
                           ? runtime.deleteTermbase(deletion.id)
-                          : runtime.deleteDomainProfile(deletion.id),
+                          : deletion.kind === "domainProfile"
+                            ? runtime.deleteDomainProfile(deletion.id)
+                            : runtime.deleteReferenceTranslation(deletion.id),
                       deletion.kind === "termbase"
                         ? `已删除术语库“${deletion.name}”。`
-                        : `已删除行业配置“${deletion.name}”。`,
+                        : deletion.kind === "domainProfile"
+                          ? `已删除行业配置“${deletion.name}”。`
+                          : "已删除参考译例。",
                     ).then((deleted) => {
                       if (deleted) setPendingDeletion(null);
                     });

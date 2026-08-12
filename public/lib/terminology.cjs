@@ -180,6 +180,10 @@ function validateTermbase(
   return freezeDeep({ id, name, enabled: Boolean(input.enabled), entries });
 }
 
+function validateTermEntry(input, { entryIdFactory } = {}) {
+  return freezeDeep(normalizeEntry(input, { entryIdFactory }));
+}
+
 function normalizeProfileField(value, field, label) {
   return optionalText(value, field, label, 500);
 }
@@ -754,6 +758,7 @@ module.exports = {
   resolveTerminology,
   terminologyError,
   validateDomainProfile,
+  validateTermEntry,
   validateTermbase,
   validateTranslationInputBudget,
 };

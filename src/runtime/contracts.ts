@@ -55,6 +55,8 @@ export type StandardTranslationRequest = {
   domainProfileId?: string | null;
   additionalRequirements?: string;
   taskTerms?: TaskTerm[];
+  referenceTranslationIds?: string[] | null;
+  referencePreviewToken?: string;
   confirmationToken?: string;
 };
 
@@ -99,10 +101,50 @@ export type DomainProfile = {
   preserveRules: string[];
 };
 
+export type ReferenceTranslation = {
+  id: string | null;
+  sourceLanguage: string;
+  targetLanguage: string;
+  domainProfileId: string;
+  source: string;
+  translation: string;
+};
+
 export type TerminologyState = {
   termbases: Array<Termbase & { id: string }>;
   domainProfiles: Array<DomainProfile & { id: string }>;
+  referenceTranslations: Array<ReferenceTranslation & { id: string }>;
   currentDomainProfileId: string | null;
+};
+
+export type TermbaseCsvIssue = {
+  code:
+    | "fatal_format"
+    | "mapping"
+    | "duplicate"
+    | "conflict"
+    | "language_direction"
+    | "invalid_row";
+  severity: "error";
+  row: number;
+  field?: string;
+  message: string;
+};
+
+export type TermbaseCsvPreview = {
+  previewToken: string | null;
+  columns: string[];
+  requiredFields: string[];
+  optionalFields: string[];
+  fieldMapping: Record<string, string | null>;
+  issues: TermbaseCsvIssue[];
+  rowCount: number;
+  canImport: boolean;
+};
+
+export type TermbaseCsvExport = {
+  fileName: string;
+  bytes: Uint8Array;
 };
 
 export type TerminologyConflict = {
@@ -192,6 +234,7 @@ export type StandardTranslationResult =
         | "source_text_too_long"
         | "invalid_target_language"
         | "invalid_confirmation"
+        | "invalid_reference_selection"
         | "invalid_terminology"
         | "terminology_conflict"
         | "terminology_limit_exceeded"
@@ -200,6 +243,12 @@ export type StandardTranslationResult =
       message?: string;
       terminologyConflicts?: TerminologyConflict[];
       sourceRetained: true;
+    }
+  | {
+      status: "reference_confirmation_required";
+      sourceRetained: true;
+      previewToken: string;
+      referenceTranslations: Array<ReferenceTranslation & { id: string }>;
     }
   | {
       status: "configuration_required";
@@ -248,6 +297,7 @@ export type CurrentTranslationInputs = {
   qualityMode: "standard";
   additionalRequirements: string;
   taskTerms: TaskTerm[];
+  referenceTranslationIds: string[] | null;
 };
 
 export type CurrentTranslationSnapshot = {
@@ -274,6 +324,16 @@ export interface RuyiRuntimeBridge {
   saveDomainProfile(input: DomainProfile): Promise<TerminologyState>;
   deleteDomainProfile(domainProfileId: string): Promise<TerminologyState>;
   setCurrentDomainProfile(domainProfileId: string | null): Promise<TerminologyState>;
+  saveReferenceTranslation(input: ReferenceTranslation): Promise<TerminologyState>;
+  deleteReferenceTranslation(referenceTranslationId: string): Promise<TerminologyState>;
+  previewTermbaseCsv(request: {
+    termbaseId: string;
+    bytes: Uint8Array;
+    mapping?: Record<string, string>;
+  }): Promise<TermbaseCsvPreview>;
+  discardTermbaseCsvPreview(previewToken: string): void;
+  commitTermbaseCsv(previewToken: string): Promise<TerminologyState>;
+  exportTermbaseCsv(termbaseId: string): Promise<TermbaseCsvExport>;
   getServiceConfiguration(
     configurationId?: string,
   ): Promise<RuntimeConfigurationState>;

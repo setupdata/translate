@@ -21,6 +21,7 @@ const terminologyState: TerminologyState = {
       preserveRules: [],
     },
   ],
+  referenceTranslations: [],
   currentDomainProfileId: null,
 };
 
@@ -34,6 +35,7 @@ describe("ConfiguredTranslationPage terminology", () => {
       qualityMode: "standard" as const,
       additionalRequirements: "",
       taskTerms: [{ sourceTerm: "old source", preferredTarget: "旧译法" }],
+      referenceTranslationIds: null,
     };
     const startStandardTranslation = vi.fn(async (request) => ({
       status: "completed" as const,
@@ -197,5 +199,82 @@ describe("ConfiguredTranslationPage terminology", () => {
         name: "",
       }),
     ).toHaveTextContent("附加翻译要求不能超过 2,000 个 Unicode 码点。");
+  });
+
+  it("previews locally selected reference translations and sends only the confirmed subset", async () => {
+    const user = userEvent.setup();
+    const references = [
+      {
+        id: "reference-1",
+        domainProfileId: "energy-profile",
+        sourceLanguage: "English",
+        targetLanguage: "Simplified Chinese",
+        source: "The power grid is stable.",
+        translation: "电网运行稳定。",
+      },
+      {
+        id: "reference-2",
+        domainProfileId: "energy-profile",
+        sourceLanguage: "English",
+        targetLanguage: "Simplified Chinese",
+        source: "Inspect the power grid.",
+        translation: "检查电网。",
+      },
+    ];
+    const startStandardTranslation = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "reference_confirmation_required" as const,
+        sourceRetained: true as const,
+        previewToken: "reference-preview-1",
+        referenceTranslations: references,
+      })
+      .mockResolvedValueOnce({
+        status: "completed" as const,
+        taskId: "task-reference",
+        translation: "译文",
+        quality: { risks: [], pasteBlocked: false },
+      });
+    const runtime = createRuntimeStub({
+      getTerminologyState: vi.fn(async () => ({
+        ...terminologyState,
+        referenceTranslations: references,
+        currentDomainProfileId: "energy-profile",
+      })),
+      startStandardTranslation,
+    });
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="The power grid is stable."
+        runtime={runtime}
+      />,
+    );
+
+    await screen.findByText(/当前服务/u);
+    await user.click(screen.getByRole("button", { name: "开始翻译" }));
+    expect(
+      await screen.findByRole("heading", { name: "确认参考译例" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消本次翻译" })).toHaveFocus();
+    expect(startStandardTranslation).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ referenceTranslationIds: null }),
+      expect.any(Function),
+    );
+
+    await user.click(screen.getByLabelText("使用参考译例 2"));
+    await user.click(screen.getByRole("button", { name: "按所选译例继续" }));
+
+    await waitFor(() => expect(startStandardTranslation).toHaveBeenCalledTimes(2));
+    expect(startStandardTranslation).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        referencePreviewToken: "reference-preview-1",
+        referenceTranslationIds: ["reference-1"],
+      }),
+      expect.any(Function),
+    );
+    expect(await screen.findByLabelText("译文")).toHaveTextContent("译文");
   });
 });

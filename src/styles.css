@@ -237,6 +237,37 @@ button:disabled {
   padding: 8px 12px;
 }
 
+.file-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  color: #fff;
+  background: #63407f;
+  cursor: pointer;
+}
+
+.file-action:hover {
+  background: #4e3167;
+}
+
+.file-action:focus-within {
+  outline: 3px solid rgb(106 70 145 / 30%);
+  outline-offset: 2px;
+}
+
+.file-action input[type="file"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
 .checkbox-label {
   display: flex;
   align-items: center;
@@ -262,6 +293,17 @@ button:disabled {
   padding: 14px;
   border: 1px solid #d7cde2;
   border-radius: 12px;
+}
+
+.csv-field-mapping {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.csv-field-mapping label {
+  display: grid;
+  gap: 6px;
 }
 
 .task-terms-editor,
@@ -301,6 +343,23 @@ button:disabled {
 .terminology-conflicts h3,
 .terminology-conflicts p {
   margin: 0;
+}
+
+.reference-translation-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.reference-translation-choice > span {
+  display: grid;
+  gap: 4px;
+}
+
+.reference-translation-choice small {
+  color: #6a6173;
 }
 
 .term-entry label,
@@ -408,6 +467,7 @@ button:disabled {
 
   .task-summary,
   .current-translation-note,
+  .reference-translation-choice small,
   .confirmation-card dt {
     color: #bdb3c7;
   }

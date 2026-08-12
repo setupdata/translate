@@ -26,6 +26,15 @@ const {
   validateTermbase,
   validateTranslationInputBudget,
 } = require("./terminology.cjs");
+const {
+  resolveReferenceSelection,
+  selectReferenceTranslations,
+  validateReferenceTranslation,
+} = require("./reference-translations.cjs");
+const {
+  exportTermbaseCsv: serializeTermbaseCsv,
+  previewTermbaseCsv: inspectTermbaseCsv,
+} = require("./terminology-csv.cjs");
 
 const CONNECTION_TEST_SOURCE_TEXT = "Connection test";
 const CONNECTION_TEST_MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -220,6 +229,11 @@ function normalizeTaskTerms(taskTerms) {
   }));
 }
 
+function normalizeReferenceTranslationIds(referenceTranslationIds) {
+  if (!Array.isArray(referenceTranslationIds)) return null;
+  return referenceTranslationIds.map((id) => (typeof id === "string" ? id : ""));
+}
+
 function normalizeCurrentInputs(inputs) {
   const targetLanguage = normalizeTargetLanguage(inputs && inputs.targetLanguage);
   return freezeDeep({
@@ -240,6 +254,9 @@ function normalizeCurrentInputs(inputs) {
         ? inputs.additionalRequirements
         : "",
     taskTerms: normalizeTaskTerms(inputs && inputs.taskTerms),
+    referenceTranslationIds: normalizeReferenceTranslationIds(
+      inputs && inputs.referenceTranslationIds,
+    ),
   });
 }
 
@@ -252,7 +269,12 @@ function inputsFingerprint(inputs) {
     inputs.qualityMode,
     inputs.additionalRequirements,
     inputs.taskTerms,
+    inputs.referenceTranslationIds,
   ]);
+}
+
+function referencePreviewFingerprint(inputs) {
+  return inputsFingerprint({ ...inputs, referenceTranslationIds: null });
 }
 
 function createRuyiRuntime({
@@ -267,6 +289,9 @@ function createRuyiRuntime({
   hostActions = {},
 }) {
   const pendingConfirmations = new Map();
+  const pendingReferencePreviews = new Map();
+  const approvedReferenceSelections = new Map();
+  const pendingCsvImports = new Map();
   const preparingTaskIds = new Set();
   const cancelledPreparingTaskIds = new Set();
   const currentTranslationListeners = new Set();
@@ -294,7 +319,7 @@ function createRuyiRuntime({
           next.stale ||
             (task &&
             inputsFingerprint(inputs) !==
-              inputsFingerprint({
+            inputsFingerprint({
                 sourceText: task.sourceText,
                 targetLanguage: task.targetLanguage,
                 serviceConfigurationId: task.serviceConfigurationId,
@@ -302,6 +327,7 @@ function createRuyiRuntime({
                 qualityMode: task.qualityMode,
                 additionalRequirements: task.additionalRequirements,
                 taskTerms: task.taskTerms,
+                referenceTranslationIds: task.referenceTranslationIds,
               })),
         ),
       });
@@ -343,6 +369,8 @@ function createRuyiRuntime({
 
   function cancelAllCurrentWork() {
     pendingConfirmations.clear();
+    pendingReferencePreviews.clear();
+    approvedReferenceSelections.clear();
     for (const taskId of preparingTaskIds) {
       cancelledPreparingTaskIds.add(taskId);
     }
@@ -376,9 +404,19 @@ function createRuyiRuntime({
             ? settings.defaults.additionalRequirements
             : "",
       taskTerms: request.taskTerms,
+      referenceTranslationIds: request.referenceTranslationIds,
     });
+    const approvedReferenceContinuation = approvedReferenceSelections.get(request.taskId);
     const continuation =
-      Boolean(request.confirmationToken) &&
+      Boolean(
+        request.confirmationToken ||
+          request.referencePreviewToken ||
+          (approvedReferenceContinuation &&
+            approvedReferenceContinuation.inputsFingerprint ===
+              referencePreviewFingerprint(inputs) &&
+            JSON.stringify(approvedReferenceContinuation.selectedIds) ===
+              JSON.stringify(inputs.referenceTranslationIds)),
+      ) &&
       currentTranslation &&
       currentTranslation.task &&
       currentTranslation.task.taskId === request.taskId;
@@ -387,7 +425,9 @@ function createRuyiRuntime({
       currentCopyCandidate = null;
     }
     const task = continuation
-      ? currentTranslation.task
+      ? request.referencePreviewToken
+        ? freezeDeep({ taskId: request.taskId, ...inputs })
+        : currentTranslation.task
       : freezeDeep({ taskId: request.taskId, ...inputs });
     publishCurrentTranslation({
       phase: "preparing",
@@ -436,6 +476,7 @@ function createRuyiRuntime({
       version: 1,
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     };
   }
@@ -448,7 +489,12 @@ function createRuyiRuntime({
       Array.isArray(existing.termbases) &&
       Array.isArray(existing.domainProfiles)
     ) {
-      return existing;
+      return {
+        ...existing,
+        referenceTranslations: Array.isArray(existing.referenceTranslations)
+          ? existing.referenceTranslations
+          : [],
+      };
     }
     return createInitialTerminologyState();
   }
@@ -458,7 +504,7 @@ function createRuyiRuntime({
       cryptoStorage.setItem(TERMINOLOGY_KEY, state);
     } catch {
       throw Object.assign(
-        new Error("uTools 加密存储不可用，术语库和行业配置未保存。"),
+        new Error("uTools 加密存储不可用，术语库、行业配置和参考译例未保存。"),
         { code: "terminology_validation_error" },
       );
     }
@@ -475,6 +521,9 @@ function createRuyiRuntime({
         termbaseIds: [...domainProfile.termbaseIds],
         preserveRules: [...domainProfile.preserveRules],
       })),
+      referenceTranslations: state.referenceTranslations.map((reference) => ({
+        ...reference,
+      })),
       currentDomainProfileId:
         typeof state.currentDomainProfileId === "string"
           ? state.currentDomainProfileId
@@ -488,6 +537,9 @@ function createRuyiRuntime({
 
   function markTerminologyChanged() {
     pendingConfirmations.clear();
+    pendingReferencePreviews.clear();
+    approvedReferenceSelections.clear();
+    pendingCsvImports.clear();
     if (currentTranslation && currentTranslation.task) {
       publishCurrentTranslation({ ...currentTranslation, stale: true });
     }
@@ -566,11 +618,14 @@ function createRuyiRuntime({
       });
     }
     state.domainProfiles.splice(index, 1);
+    state.referenceTranslations = state.referenceTranslations.filter(
+      (reference) => reference.domainProfileId !== domainProfileId,
+    );
     if (state.currentDomainProfileId === domainProfileId) {
       state.currentDomainProfileId = null;
     }
     writeTerminologyState(state);
-    pendingConfirmations.clear();
+    markTerminologyChanged();
     if (currentTranslation) {
       updateCurrentTranslationInputs({
         ...currentTranslation.inputs,
@@ -597,6 +652,8 @@ function createRuyiRuntime({
     state.currentDomainProfileId = domainProfileId;
     writeTerminologyState(state);
     pendingConfirmations.clear();
+    pendingReferencePreviews.clear();
+    approvedReferenceSelections.clear();
     if (currentTranslation) {
       updateCurrentTranslationInputs({
         ...currentTranslation.inputs,
@@ -604,6 +661,141 @@ function createRuyiRuntime({
       });
     }
     return terminologyStateView(state);
+  }
+
+  async function saveReferenceTranslation(input) {
+    const state = readTerminologyState();
+    const existingIndex =
+      input && typeof input.id === "string"
+        ? state.referenceTranslations.findIndex((reference) => reference.id === input.id)
+        : -1;
+    const normalized = validateReferenceTranslation(input, {
+      domainProfiles: state.domainProfiles,
+      idFactory: terminologyIdFactory,
+    });
+    if (existingIndex >= 0) {
+      state.referenceTranslations.splice(existingIndex, 1, normalized);
+    } else {
+      state.referenceTranslations.push(normalized);
+    }
+    writeTerminologyState(state);
+    markTerminologyChanged();
+    return terminologyStateView(state);
+  }
+
+  async function deleteReferenceTranslation(referenceTranslationId) {
+    const state = readTerminologyState();
+    const index = state.referenceTranslations.findIndex(
+      (reference) => reference.id === referenceTranslationId,
+    );
+    if (index < 0) {
+      throw Object.assign(new Error("要删除的参考译例不存在。"), {
+        code: "reference_validation_error",
+        field: "referenceTranslationId",
+      });
+    }
+    state.referenceTranslations.splice(index, 1);
+    writeTerminologyState(state);
+    markTerminologyChanged();
+    return terminologyStateView(state);
+  }
+
+  async function previewTermbaseCsv({ termbaseId, bytes, mapping = {} }) {
+    const state = readTerminologyState();
+    const termbase = state.termbases.find((candidate) => candidate.id === termbaseId);
+    if (!termbase) {
+      throw Object.assign(new Error("要导入的术语库不存在。"), {
+        code: "terminology_validation_error",
+        field: "termbaseId",
+      });
+    }
+    const inspected = inspectTermbaseCsv({
+      bytes,
+      mapping,
+      existingEntries: termbase.entries,
+      entryIdFactory: terminologyIdFactory,
+    });
+    const previewToken = inspected.canImport ? tokenFactory() : null;
+    if (previewToken) {
+      pendingCsvImports.set(previewToken, {
+        termbaseId,
+        termbaseFingerprint: JSON.stringify(termbase),
+        entries: inspected.entries,
+      });
+    }
+    return freezeDeep({
+      previewToken,
+      columns: [...inspected.columns],
+      requiredFields: ["sourceTerm", "preferredTarget", "sourceLanguage", "targetLanguage"],
+      optionalFields: [
+        "allowedVariants",
+        "forbiddenTargets",
+        "meaning",
+        "strictness",
+        "caseSensitive",
+        "aliases",
+        "priority",
+      ],
+      fieldMapping: { ...inspected.fieldMapping },
+      issues: inspected.issues.map((item) => ({ ...item })),
+      rowCount: inspected.entries.length,
+      canImport: inspected.canImport,
+    });
+  }
+
+  function discardTermbaseCsvPreview(previewToken) {
+    pendingCsvImports.delete(previewToken);
+  }
+
+  async function commitTermbaseCsv(previewToken) {
+    const pending = pendingCsvImports.get(previewToken);
+    pendingCsvImports.delete(previewToken);
+    if (!pending) {
+      throw Object.assign(new Error("CSV 导入预览已失效，请重新预览。"), {
+        code: "terminology_validation_error",
+        field: "previewToken",
+      });
+    }
+    const currentState = readTerminologyState();
+    const currentTermbase = currentState.termbases.find(
+      (termbase) => termbase.id === pending.termbaseId,
+    );
+    if (!currentTermbase || JSON.stringify(currentTermbase) !== pending.termbaseFingerprint) {
+      throw Object.assign(new Error("术语库已发生变化，请重新预览 CSV。"), {
+        code: "terminology_validation_error",
+        field: "previewToken",
+      });
+    }
+    const nextState = JSON.parse(JSON.stringify(currentState));
+    const index = nextState.termbases.findIndex(
+      (termbase) => termbase.id === pending.termbaseId,
+    );
+    nextState.termbases[index] = validateTermbase(
+      {
+        ...nextState.termbases[index],
+        entries: [...nextState.termbases[index].entries, ...pending.entries],
+      },
+      {
+        termbases: nextState.termbases,
+        idFactory: terminologyIdFactory,
+        entryIdFactory: terminologyIdFactory,
+      },
+    );
+    writeTerminologyState(nextState);
+    markTerminologyChanged();
+    return terminologyStateView(nextState);
+  }
+
+  async function exportTermbaseCsv(termbaseId) {
+    const state = readTerminologyState();
+    const termbase = state.termbases.find((candidate) => candidate.id === termbaseId);
+    if (!termbase) {
+      throw Object.assign(new Error("要导出的术语库不存在。"), {
+        code: "terminology_validation_error",
+        field: "termbaseId",
+      });
+    }
+    return serializeTermbaseCsv(termbase);
   }
 
   function prepareTerminologyInput(request, targetLanguage, submittedInputs) {
@@ -626,6 +818,59 @@ function createRuyiRuntime({
       termbases: terminologyState.termbases,
       domainProfile: selectedDomainProfile,
     });
+    const referenceCandidates = selectReferenceTranslations({
+      sourceText: request.sourceText,
+      targetLanguage,
+      domainProfileId: submittedInputs.domainProfileId,
+      referenceTranslations: terminologyState.referenceTranslations,
+    });
+    let referenceTranslations = [];
+    let referencePreviewRequired = false;
+    if (request.referencePreviewToken) {
+      const pending = pendingReferencePreviews.get(request.referencePreviewToken);
+      pendingReferencePreviews.delete(request.referencePreviewToken);
+      if (
+        !pending ||
+        pending.taskId !== request.taskId ||
+        pending.sourceText !== request.sourceText ||
+        pending.inputsFingerprint !== referencePreviewFingerprint(submittedInputs)
+      ) {
+        throw Object.assign(new Error("参考译例预览已失效，请重新预览。"), {
+          code: "reference_validation_error",
+          field: "referencePreviewToken",
+        });
+      }
+      referenceTranslations = resolveReferenceSelection({
+        selectedIds: submittedInputs.referenceTranslationIds,
+        candidates: pending.candidates,
+      });
+      approvedReferenceSelections.set(request.taskId, {
+        inputsFingerprint: referencePreviewFingerprint(submittedInputs),
+        selectedIds: [...submittedInputs.referenceTranslationIds],
+      });
+    } else if (submittedInputs.referenceTranslationIds !== null) {
+      const approved = approvedReferenceSelections.get(request.taskId);
+      const approvedSelection =
+        approved &&
+        approved.inputsFingerprint === referencePreviewFingerprint(submittedInputs) &&
+        JSON.stringify(approved.selectedIds) ===
+          JSON.stringify(submittedInputs.referenceTranslationIds);
+      if (approvedSelection) {
+        referenceTranslations = resolveReferenceSelection({
+          selectedIds: submittedInputs.referenceTranslationIds,
+          candidates: referenceCandidates,
+        });
+      } else if (referenceCandidates.length > 0) {
+        referencePreviewRequired = true;
+      } else {
+        referenceTranslations = resolveReferenceSelection({
+          selectedIds: submittedInputs.referenceTranslationIds,
+          candidates: referenceCandidates,
+        });
+      }
+    } else if (referenceCandidates.length > 0) {
+      referencePreviewRequired = true;
+    }
     const domainProfile = selectedDomainProfile
       ? {
           id: selectedDomainProfile.id,
@@ -644,7 +889,7 @@ function createRuyiRuntime({
       targetLanguage,
       domainProfile,
       matchedTerms: terminologyResolution.matchedTerms,
-      referenceTranslations: [],
+      referenceTranslations,
       additionalRequirements: submittedInputs.additionalRequirements,
       protectedItems: extractProtectedItems(request.sourceText),
       qualityMode: "standard",
@@ -653,7 +898,12 @@ function createRuyiRuntime({
       sourceText: request.sourceText,
     };
     validateTranslationInputBudget({ input });
-    return { input, terminologyResolution };
+    return {
+      input,
+      terminologyResolution,
+      referenceCandidates,
+      referencePreviewRequired,
+    };
   }
 
   function configurationsIn(settings) {
@@ -1170,6 +1420,32 @@ function createRuyiRuntime({
       };
     }
 
+    if (
+      request.referenceTranslationIds !== undefined &&
+      request.referenceTranslationIds !== null &&
+      !Array.isArray(request.referenceTranslationIds)
+    ) {
+      return {
+        status: "validation_error",
+        reason: "invalid_reference_selection",
+        field: "referenceTranslationIds",
+        message: "参考译例选择必须是数组。",
+        sourceRetained: true,
+      };
+    }
+    if (
+      Array.isArray(request.referenceTranslationIds) &&
+      request.referenceTranslationIds.length > 3
+    ) {
+      return {
+        status: "validation_error",
+        reason: "input_budget_exceeded",
+        field: "referenceTranslationIds",
+        message: "参考译例最多选择 3 条，不能截断多余条目。",
+        sourceRetained: true,
+      };
+    }
+
     if (request.taskTerms !== undefined && !Array.isArray(request.taskTerms)) {
       return {
         status: "validation_error",
@@ -1197,7 +1473,9 @@ function createRuyiRuntime({
             ? "terminology_limit_exceeded"
             : error && error.code === "input_budget_exceeded"
               ? "input_budget_exceeded"
-              : "invalid_terminology",
+              : error && error.code === "reference_validation_error"
+                ? "invalid_reference_selection"
+                : "invalid_terminology",
         ...(error && error.field ? { field: error.field } : {}),
         message:
           error && typeof error.message === "string"
@@ -1216,6 +1494,25 @@ function createRuyiRuntime({
         terminologyConflicts: terminologyPreparation.terminologyResolution.conflicts,
       };
       storeCurrentResult(request.taskId, result, "failed");
+      return result;
+    }
+    if (terminologyPreparation.referencePreviewRequired) {
+      const previewToken = tokenFactory();
+      pendingReferencePreviews.set(previewToken, {
+        taskId: request.taskId,
+        sourceText: request.sourceText,
+        inputsFingerprint: referencePreviewFingerprint(submittedInputs),
+        candidates: terminologyPreparation.referenceCandidates,
+      });
+      const result = freezeDeep({
+        status: "reference_confirmation_required",
+        sourceRetained: true,
+        previewToken,
+        referenceTranslations: terminologyPreparation.referenceCandidates.map(
+          (reference) => ({ ...reference }),
+        ),
+      });
+      storeCurrentResult(request.taskId, result, "awaiting_confirmation");
       return result;
     }
     const { input, terminologyResolution } = terminologyPreparation;
@@ -1346,7 +1643,7 @@ function createRuyiRuntime({
               "目标语言",
               ...(input.domainProfile ? ["行业配置"] : []),
               "命中的术语",
-              "参考译例",
+              ...(input.referenceTranslations.length > 0 ? ["参考译例"] : []),
               "附加翻译要求",
             ],
             callCount: 1,
@@ -1603,6 +1900,15 @@ function createRuyiRuntime({
         cancelledPendingConfirmation = true;
       }
     }
+    for (const [token, pending] of pendingReferencePreviews) {
+      if (pending.taskId === taskId) {
+        pendingReferencePreviews.delete(token);
+        cancelledPendingConfirmation = true;
+      }
+    }
+    if (approvedReferenceSelections.delete(taskId)) {
+      cancelledPendingConfirmation = true;
+    }
     if (preparingTaskIds.has(taskId)) {
       cancelledPreparingTaskIds.add(taskId);
     }
@@ -1688,6 +1994,12 @@ function createRuyiRuntime({
     saveDomainProfile,
     deleteDomainProfile,
     setCurrentDomainProfile,
+    saveReferenceTranslation,
+    deleteReferenceTranslation,
+    previewTermbaseCsv,
+    discardTermbaseCsvPreview,
+    commitTermbaseCsv,
+    exportTermbaseCsv,
     getServiceConfiguration,
     getServiceConfigurations,
     saveServiceConfiguration,

@@ -110,6 +110,7 @@ describe("Ruyi runtime terminology integration", () => {
     expect(await runtime.getTerminologyState()).toEqual({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     });
     await runtime.saveTermbase(termbase({ id: null, entries: [term({ id: null })] }));
@@ -135,6 +136,7 @@ describe("Ruyi runtime terminology integration", () => {
     expect(await runtime.getTerminologyState()).toEqual({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     });
   });

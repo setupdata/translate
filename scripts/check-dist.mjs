@@ -12,10 +12,12 @@ const requiredFiles = [
   "lib/chat-sse-parser.cjs",
   "lib/prompts.cjs",
   "lib/quality-checks.cjs",
+  "lib/reference-translations.cjs",
   "lib/responses-parser.cjs",
   "lib/ruyi-runtime.cjs",
   "lib/service-configurations.cjs",
   "lib/terminology.cjs",
+  "lib/terminology-csv.cjs",
   "lib/text-limits.cjs",
   "lib/translation-protocol.cjs",
 ];

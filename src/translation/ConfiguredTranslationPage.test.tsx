@@ -52,6 +52,12 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
   | "saveDomainProfile"
   | "deleteDomainProfile"
   | "setCurrentDomainProfile"
+  | "saveReferenceTranslation"
+  | "deleteReferenceTranslation"
+  | "previewTermbaseCsv"
+  | "discardTermbaseCsvPreview"
+  | "commitTermbaseCsv"
+  | "exportTermbaseCsv"
 > {
   const configurationsState = () => ({
     currentServiceConfigurationId: missingKeyService.id,
@@ -61,32 +67,71 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
     getTerminologyState: vi.fn(async () => ({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     })),
     saveTermbase: vi.fn(async () => ({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     })),
     deleteTermbase: vi.fn(async () => ({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     })),
     saveDomainProfile: vi.fn(async () => ({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     })),
     deleteDomainProfile: vi.fn(async () => ({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
     })),
     setCurrentDomainProfile: vi.fn(async () => ({
       termbases: [],
       domainProfiles: [],
+      referenceTranslations: [],
       currentDomainProfileId: null,
+    })),
+    saveReferenceTranslation: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      referenceTranslations: [],
+      currentDomainProfileId: null,
+    })),
+    deleteReferenceTranslation: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      referenceTranslations: [],
+      currentDomainProfileId: null,
+    })),
+    previewTermbaseCsv: vi.fn(async () => ({
+      previewToken: null,
+      columns: [],
+      requiredFields: [],
+      optionalFields: [],
+      fieldMapping: {},
+      issues: [],
+      rowCount: 0,
+      canImport: false,
+    })),
+    discardTermbaseCsvPreview: vi.fn(),
+    commitTermbaseCsv: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      referenceTranslations: [],
+      currentDomainProfileId: null,
+    })),
+    exportTermbaseCsv: vi.fn(async () => ({
+      fileName: "terms.csv",
+      bytes: new Uint8Array(),
     })),
     getCurrentTranslation: () => null,
     updateCurrentTranslationInputs: (inputs: CurrentTranslationInputs) =>
@@ -905,6 +950,7 @@ describe("ConfiguredTranslationPage", () => {
         qualityMode: "standard",
         additionalRequirements: "Keep headings short.",
         taskTerms: [],
+        referenceTranslationIds: null,
       },
       task: {
         taskId: "task-restored",
@@ -920,6 +966,7 @@ describe("ConfiguredTranslationPage", () => {
         qualityMode: "standard",
         additionalRequirements: "Keep headings short.",
         taskTerms: [],
+        referenceTranslationIds: null,
       },
       partialTranslation: "restored translation",
       result: {
@@ -970,6 +1017,7 @@ describe("ConfiguredTranslationPage", () => {
         qualityMode: "standard",
         additionalRequirements: "",
         taskTerms: [],
+        referenceTranslationIds: null,
       },
       task: {
         taskId: "task-old-entry",
@@ -980,6 +1028,7 @@ describe("ConfiguredTranslationPage", () => {
         qualityMode: "standard",
         additionalRequirements: "",
         taskTerms: [],
+        referenceTranslationIds: null,
       },
       partialTranslation: "旧的部分译文",
       result: null,
@@ -1028,6 +1077,7 @@ describe("ConfiguredTranslationPage", () => {
       qualityMode: "standard",
       additionalRequirements: "",
       taskTerms: [],
+      referenceTranslationIds: null,
     };
     const runtime = createRuntimeForBoundary();
     runtime.getCurrentTranslation = vi.fn(
