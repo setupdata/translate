@@ -35,11 +35,37 @@ export type StandardTranslationRequest = {
   confirmationToken?: string;
 };
 
+export type StableTranslationErrorCode =
+  | "configuration_error"
+  | "authentication_error"
+  | "permission_error"
+  | "request_rejected"
+  | "rate_limited"
+  | "server_error"
+  | "network_error"
+  | "tls_error"
+  | "timeout"
+  | "cancelled"
+  | "response_too_large"
+  | "protocol_error"
+  | "content_rejected"
+  | "unknown_error";
+
+export type TranslationProgressEvent =
+  | { type: "started"; taskId: string }
+  | { type: "text_delta"; taskId: string; delta: string }
+  | {
+      type: "finished";
+      taskId: string;
+      status: "completed" | "failed" | "cancelled";
+    };
+
 export type StandardTranslationResult =
   | {
       status: "validation_error";
       reason:
         | "invalid_source_text"
+        | "source_text_too_long"
         | "invalid_target_language"
         | "invalid_confirmation";
       sourceRetained: true;
@@ -68,7 +94,13 @@ export type StandardTranslationResult =
       status: "failed";
       taskId: string;
       sourceRetained: true;
-      error: { code: string; message: string };
+      partialTranslation?: string;
+      error: {
+        code: StableTranslationErrorCode;
+        message: string;
+        httpStatus?: number;
+        requestId?: string;
+      };
     };
 
 export interface RuyiRuntimeBridge {
@@ -76,6 +108,7 @@ export interface RuyiRuntimeBridge {
   saveApiKey(credentialForm: HTMLFormElement): Promise<RuntimeConfigurationState>;
   startStandardTranslation(
     request: StandardTranslationRequest,
+    onProgress?: (event: TranslationProgressEvent) => void,
   ): Promise<StandardTranslationResult>;
   cancelTranslation(taskId: string): void;
 }

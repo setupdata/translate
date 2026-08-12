@@ -9,8 +9,10 @@ const requiredFiles = [
   "preload.js",
   "logo.svg",
   "lib/node-chat-transport.cjs",
+  "lib/chat-sse-parser.cjs",
   "lib/prompts.cjs",
   "lib/ruyi-runtime.cjs",
+  "lib/text-limits.cjs",
 ];
 
 await Promise.all(requiredFiles.map((file) => access(resolve(distDirectory, file))));

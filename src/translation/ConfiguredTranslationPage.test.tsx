@@ -75,6 +75,7 @@ describe("ConfiguredTranslationPage", () => {
         sourceText,
         targetLanguage: missingKeyState.defaults.targetLanguage,
       }),
+      expect.any(Function),
     );
   });
 
@@ -296,7 +297,200 @@ describe("ConfiguredTranslationPage", () => {
         sourceText,
         confirmationToken: "confirmation-agree",
       }),
+      expect.any(Function),
     );
     expect(screen.queryByText("翻译如下")).not.toBeInTheDocument();
   });
+
+  it("shows streamed deltas, exposes cancellation, and keeps partial text on cancel", async () => {
+    const user = userEvent.setup();
+    const configuredState: RuntimeConfigurationState = {
+      ...missingKeyState,
+      serviceConfiguration: {
+        ...missingKeyService,
+        hasApiKey: true,
+        maskedApiKey: "••••••••1234",
+      },
+    };
+    let resolveRequest: (
+      value:
+        | Awaited<ReturnType<RuyiRuntimeBridge["startStandardTranslation"]>>
+        | PromiseLike<
+            Awaited<ReturnType<RuyiRuntimeBridge["startStandardTranslation"]>>
+          >,
+    ) => void = () => undefined;
+    const runtime: RuyiRuntimeBridge = {
+      getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
+      saveApiKey: vi.fn(),
+      startStandardTranslation: vi.fn((_request, onProgress) => {
+        onProgress?.({ type: "started", taskId: "task-stream" });
+        onProgress?.({
+          type: "text_delta",
+          taskId: "task-stream",
+          delta: "部分译文",
+        });
+        return new Promise((resolve) => {
+          resolveRequest = resolve;
+        }) as ReturnType<RuyiRuntimeBridge["startStandardTranslation"]>;
+      }),
+      cancelTranslation: vi.fn(() => {
+        resolveRequest({
+          status: "failed",
+          taskId: "task-stream",
+          sourceRetained: true,
+          partialTranslation: "部分译文",
+          error: { code: "cancelled", message: "翻译已取消。" },
+        });
+      }),
+    };
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("正在翻译");
+    expect(screen.getByRole("region", { name: "译文生成中" })).toHaveTextContent(
+      "部分译文",
+    );
+    await user.click(screen.getByRole("button", { name: "取消翻译" }));
+    expect(runtime.cancelTranslation).toHaveBeenCalledWith(expect.any(String));
+    expect(await screen.findByRole("alert")).toHaveTextContent("翻译已取消");
+    expect(screen.getByRole("region", { name: "部分译文" })).toHaveTextContent(
+      "部分译文",
+    );
+  });
+
+  it("supports Ctrl/Command+Enter to start, ordinary Enter for newlines, and Esc to cancel", async () => {
+    const user = userEvent.setup();
+    const configuredState: RuntimeConfigurationState = {
+      ...missingKeyState,
+      serviceConfiguration: {
+        ...missingKeyService,
+        hasApiKey: true,
+        maskedApiKey: "••••••••1234",
+      },
+    };
+    const startStandardTranslation = vi.fn((_request, onProgress) => {
+      onProgress?.({ type: "started", taskId: "task-shortcut" });
+      return new Promise(() => undefined) as ReturnType<
+        RuyiRuntimeBridge["startStandardTranslation"]
+      >;
+    });
+    const runtime: RuyiRuntimeBridge = {
+      getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
+      saveApiKey: vi.fn(),
+      startStandardTranslation,
+      cancelTranslation: vi.fn(),
+    };
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    const source = await screen.findByRole("textbox", { name: "源文本" });
+    await user.click(source);
+    await user.keyboard("{Enter}");
+    expect(startStandardTranslation).not.toHaveBeenCalled();
+    expect(source).toHaveValue("source\n");
+
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(startStandardTranslation).toHaveBeenCalledOnce();
+    vi.mocked(runtime.cancelTranslation).mockClear();
+    await user.keyboard("{Escape}");
+    expect(runtime.cancelTranslation).toHaveBeenCalledOnce();
+  });
+
+  it("supports Command+Enter and clears an old result when a new request starts", async () => {
+    const user = userEvent.setup();
+    const configuredState: RuntimeConfigurationState = {
+      ...missingKeyState,
+      serviceConfiguration: {
+        ...missingKeyService,
+        hasApiKey: true,
+        maskedApiKey: "••••••••1234",
+      },
+    };
+    const never = new Promise<never>(() => undefined);
+    const startStandardTranslation = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "completed",
+        taskId: "first",
+        translation: "旧译文",
+      })
+      .mockImplementationOnce((_request, onProgress) => {
+        onProgress?.({ type: "started", taskId: "second" });
+        return never;
+      });
+    const runtime: RuyiRuntimeBridge = {
+      getServiceConfiguration: vi.fn().mockResolvedValue(configuredState),
+      saveApiKey: vi.fn(),
+      startStandardTranslation,
+      cancelTranslation: vi.fn(),
+    };
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText="source"
+        runtime={runtime}
+      />,
+    );
+    const source = await screen.findByRole("textbox", { name: "源文本" });
+    await user.click(screen.getByRole("button", { name: "开始翻译" }));
+    expect(await screen.findByRole("region", { name: "译文" })).toHaveTextContent(
+      "旧译文",
+    );
+
+    await user.click(source);
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    expect(startStandardTranslation).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("region", { name: "译文" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("正在翻译");
+  });
+
+  it("rejects source text over 10,000 code points without calling the runtime", async () => {
+    const user = userEvent.setup();
+    const runtime = {
+      ...createRuntimeForBoundary(),
+      startStandardTranslation: vi.fn(),
+    } satisfies RuyiRuntimeBridge;
+
+    render(
+      <ConfiguredTranslationPage
+        autoStart={false}
+        initialText={"😀".repeat(10_001)}
+        runtime={runtime}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "开始翻译" }));
+
+    expect(runtime.startStandardTranslation).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("10,000");
+  });
 });
+
+function createRuntimeForBoundary(): RuyiRuntimeBridge {
+  return {
+    getServiceConfiguration: vi.fn().mockResolvedValue({
+      ...missingKeyState,
+      serviceConfiguration: {
+        ...missingKeyService,
+        hasApiKey: true,
+        maskedApiKey: "••••••••1234",
+      },
+    }),
+    saveApiKey: vi.fn(),
+    startStandardTranslation: vi.fn(),
+    cancelTranslation: vi.fn(),
+  };
+}

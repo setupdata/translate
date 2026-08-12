@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const transportPath = resolve(
@@ -25,6 +25,28 @@ afterEach(async () => {
 });
 
 describe("Node chat transport", () => {
+  it("accepts IPv6 loopback HTTP and rejects URL credentials", async () => {
+    const { createNodeChatTransport } = require(transportPath);
+    const transport = createNodeChatTransport();
+
+    await expect(
+      transport.request({
+        url: "http://user:password@127.0.0.1:1/chat/completions",
+        method: "POST",
+        headers: {},
+        body: "{}",
+      }),
+    ).rejects.toMatchObject({ code: "configuration_error" });
+
+    const pending = transport.request({
+      url: "http://[::1]:1/chat/completions",
+      method: "POST",
+      headers: {},
+      body: "{}",
+    });
+    await expect(pending).rejects.not.toMatchObject({ code: "configuration_error" });
+  });
+
   it("posts the exact request and returns the complete SSE body", async () => {
     const credentialFixture = `fixture-${randomUUID()}`;
     let receivedBody = "";
@@ -70,6 +92,90 @@ describe("Node chat transport", () => {
       status: 200,
       headers: expect.objectContaining({ "x-request-id": "request-local" }),
       body: 'data: {"choices":[{"delta":{"content":"你好"}}]}\n\ndata: [DONE]\n\n',
+      complete: true,
     });
+  });
+
+  it("streams each response chunk and refreshes the no-data timer", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write('data: {"choices":[{"delta":{"content":"一"}}]}\n\n');
+      setTimeout(() => {
+        response.end('data: {"choices":[{"delta":{"content":"二"}}]}\n\ndata: [DONE]\n\n');
+      }, 20);
+    });
+    openServers.push(server);
+    await new Promise<void>((resolveListen) =>
+      server.listen(0, "127.0.0.1", resolveListen),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("测试服务没有可用端口。");
+    }
+    const { createNodeChatTransport } = require(transportPath);
+    const onData = vi.fn();
+    const transport = createNodeChatTransport({
+      noDataTimeoutMilliseconds: 100,
+      totalTimeoutMilliseconds: 1_000,
+    });
+
+    const pending = transport.request({
+      url: `http://127.0.0.1:${address.port}/chat/completions`,
+      method: "POST",
+      headers: {},
+      body: "{}",
+      onData,
+    });
+    const result = await pending;
+
+    expect(onData).toHaveBeenCalledTimes(2);
+    expect(Buffer.concat(onData.mock.calls.map(([chunk]) => chunk)).toString()).toContain(
+      "data: [DONE]",
+    );
+    expect(result.complete).toBe(true);
+  });
+
+  it("classifies user abort, no-data timeout, and total timeout", async () => {
+    const { createNodeChatTransport } = require(transportPath);
+
+    for (const testCase of [
+      { expectedCode: "cancelled", noData: 1_000, total: 2_000, abort: true },
+      { expectedCode: "timeout", noData: 10, total: 2_000, abort: false },
+      { expectedCode: "timeout", noData: 2_000, total: 10, abort: false },
+    ]) {
+      const server = createServer((_request, response) => {
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.flushHeaders();
+      });
+      openServers.push(server);
+      await new Promise<void>((resolveListen) =>
+        server.listen(0, "127.0.0.1", resolveListen),
+      );
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("测试服务没有可用端口。");
+      }
+      const controller = new AbortController();
+      const transport = createNodeChatTransport({
+        noDataTimeoutMilliseconds: testCase.noData,
+        totalTimeoutMilliseconds: testCase.total,
+      });
+      const pending = transport.request({
+        url: `http://127.0.0.1:${address.port}/chat/completions`,
+        method: "POST",
+        headers: {},
+        body: "{}",
+        signal: controller.signal,
+      });
+      if (testCase.abort) {
+        controller.abort();
+      }
+
+      await expect(pending).rejects.toMatchObject({ code: testCase.expectedCode });
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
+      openServers.pop();
+    }
   });
 });

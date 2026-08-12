@@ -379,4 +379,348 @@ describe("Ruyi runtime", () => {
       request.sourceText,
     );
   });
+
+  it("streams text progress and cancels the previous in-flight task", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const pendingRequests: Array<{
+      request: {
+        signal: AbortSignal;
+        onData(chunk: Buffer): void;
+      };
+      resolve(value: unknown): void;
+    }> = [];
+    const transport = {
+      request: vi.fn((request) => {
+        return new Promise((resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(Object.assign(new Error("cancelled"), { code: "cancelled" })),
+            { once: true },
+          );
+          pendingRequests.push({ request, resolve });
+        });
+      }),
+    };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+    const progress = vi.fn();
+    const first = runtime.startStandardTranslation(
+      {
+        taskId: "task-first",
+        sourceText: "first",
+        targetLanguage: {
+          kind: "preset",
+          id: "zh-CN",
+          modelLabel: "Simplified Chinese",
+        },
+      },
+      progress,
+    );
+    await Promise.resolve();
+    const second = runtime.startStandardTranslation({
+      taskId: "task-second",
+      sourceText: "second",
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    });
+    await Promise.resolve();
+
+    expect(await first).toMatchObject({
+      status: "failed",
+      taskId: "task-first",
+      error: { code: "cancelled" },
+    });
+    const secondTransport = pendingRequests[1];
+    secondTransport.request.onData(
+      Buffer.from('data: {"choices":[{"delta":{"content":"你"}}]}\n\n'),
+    );
+    secondTransport.request.onData(
+      Buffer.from('data: {"choices":[{"delta":{"content":"好"}}]}\n\ndata: [DONE]\n\n'),
+    );
+    secondTransport.resolve({ status: 200, headers: {}, body: "", complete: true });
+
+    expect(await second).toEqual({
+      status: "completed",
+      taskId: "task-second",
+      translation: "你好",
+    });
+    expect(progress).toHaveBeenCalledWith({
+      type: "started",
+      taskId: "task-first",
+    });
+  });
+
+  it("honours cancellation while service configuration is still being resolved", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = { request: vi.fn() };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+
+    const pending = runtime.startStandardTranslation({
+      taskId: "task-cancel-before-request",
+      sourceText: "source",
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    });
+    runtime.cancelTranslation("task-cancel-before-request");
+
+    await expect(pending).resolves.toMatchObject({
+      status: "failed",
+      taskId: "task-cancel-before-request",
+      error: { code: "cancelled" },
+    });
+    expect(transport.request).not.toHaveBeenCalled();
+  });
+
+  it("normalizes invalid service URLs and transport timeouts", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = {
+      request: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" })),
+    };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{
+        translationUrl: string;
+        confirmedTranslationUrl?: string;
+      }>;
+    };
+    settings.serviceConfigurations[0].translationUrl = "not a URL";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+
+    const request = {
+      taskId: "task-invalid-url",
+      sourceText: "source",
+      targetLanguage: {
+        kind: "preset" as const,
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    };
+    await expect(runtime.startStandardTranslation(request)).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "configuration_error" },
+    });
+    expect(transport.request).not.toHaveBeenCalled();
+
+    settings.serviceConfigurations[0].translationUrl =
+      "https://api.deepseek.com/chat/completions";
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+    await expect(
+      runtime.startStandardTranslation({ ...request, taskId: "task-timeout" }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "timeout" },
+    });
+  });
+
+  it("rejects credentials and an API key embedded in the service URL", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = { request: vi.fn() };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ translationUrl: string }>;
+    };
+
+    for (const translationUrl of [
+      "https://user:password@example.test/chat/completions",
+      `https://example.test/chat/completions?api_key=${encodeURIComponent(apiKeyFixture)}`,
+    ]) {
+      settings.serviceConfigurations[0].translationUrl = translationUrl;
+      plainStorage.setItem("ruyi.settings.v1", settings);
+      const result = await runtime.startStandardTranslation({
+        taskId: `task-sensitive-url-${translationUrl.length}`,
+        sourceText: "source",
+        targetLanguage: {
+          kind: "preset",
+          id: "zh-CN",
+          modelLabel: "Simplified Chinese",
+        },
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        error: { code: "configuration_error" },
+      });
+    }
+    expect(transport.request).not.toHaveBeenCalled();
+  });
+
+  it("does not let a throwing progress observer break request cleanup", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = {
+      request: vi.fn().mockResolvedValue({
+        status: 200,
+        headers: {},
+        body: 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+        complete: true,
+      }),
+    };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+
+    const result = await runtime.startStandardTranslation(
+      {
+        taskId: "task-observer",
+        sourceText: "source",
+        targetLanguage: {
+          kind: "preset",
+          id: "zh-CN",
+          modelLabel: "Simplified Chinese",
+        },
+      },
+      () => {
+        throw new Error("observer failed");
+      },
+    );
+
+    expect(result).toEqual({
+      status: "completed",
+      taskId: "task-observer",
+      translation: "ok",
+    });
+  });
+
+  it("keeps a cancelled task cancelled when a late transport chunk arrives", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    let lateRequest: { onData(chunk: Buffer): void } | undefined;
+    let resolveLate: ((value: unknown) => void) | undefined;
+    const transport = {
+      request: vi.fn((request) => {
+        if (!lateRequest) {
+          lateRequest = request;
+          return new Promise((resolve) => {
+            resolveLate = resolve;
+          });
+        }
+        request.onData(
+          Buffer.from('data: {"choices":[{"delta":{"content":"new"}}]}\n\ndata: [DONE]\n\n'),
+        );
+        return Promise.resolve({ status: 200, headers: {}, body: "", complete: true });
+      }),
+    };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+    const baseRequest = {
+      sourceText: "source",
+      targetLanguage: {
+        kind: "preset" as const,
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    };
+
+    const oldTask = runtime.startStandardTranslation({
+      ...baseRequest,
+      taskId: "old-task",
+    });
+    await Promise.resolve();
+    const newTask = runtime.startStandardTranslation({
+      ...baseRequest,
+      taskId: "new-task",
+    });
+    await Promise.resolve();
+    lateRequest?.onData(
+      Buffer.from('data: {"choices":[{"delta":{"tool_calls":[]}}]}\n\n'),
+    );
+    resolveLate?.({ status: 200, headers: {}, body: "", complete: true });
+
+    await expect(oldTask).resolves.toMatchObject({ error: { code: "cancelled" } });
+    await expect(newTask).resolves.toMatchObject({
+      status: "completed",
+      translation: "new",
+    });
+  });
+
+  it.each([
+    [401, "authentication_error"],
+    [403, "permission_error"],
+    [400, "request_rejected"],
+    [429, "rate_limited"],
+    [500, "server_error"],
+    [504, "timeout"],
+  ])("maps HTTP %i to %s without exposing response content", async (status, code) => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = {
+      request: vi.fn().mockResolvedValue({
+        status,
+        headers: { "x-request-id": "safe-request-id" },
+        body: "<html>secret upstream details</html>",
+        complete: true,
+      }),
+    };
+    const runtime = createRuyiRuntime({ plainStorage, cryptoStorage, transport });
+    await runtime.saveApiKey(credentialForm(apiKeyFixture));
+    const settings = plainStorage.values.get("ruyi.settings.v1") as {
+      serviceConfigurations: Array<{ confirmedTranslationUrl?: string }>;
+    };
+    settings.serviceConfigurations[0].confirmedTranslationUrl =
+      "https://api.deepseek.com/chat/completions";
+    plainStorage.setItem("ruyi.settings.v1", settings);
+
+    const result = await runtime.startStandardTranslation({
+      taskId: `task-http-${status}`,
+      sourceText: "source",
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      error: { code, httpStatus: status, requestId: "safe-request-id" },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret upstream details");
+  });
 });

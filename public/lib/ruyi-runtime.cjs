@@ -1,7 +1,9 @@
 const SETTINGS_KEY = "ruyi.settings.v1";
 const API_KEY_PREFIX = "ruyi.secret.api-key.";
 const { randomBytes } = require("crypto");
+const { createChatSseParser } = require("./chat-sse-parser.cjs");
 const { TRANSLATION_SYSTEM_PROMPT } = require("./prompts.cjs");
+const { inspectSourceText } = require("./text-limits.cjs");
 
 const DEEPSEEK_FLASH_PRESET = Object.freeze({
   id: "deepseek-flash",
@@ -72,45 +74,92 @@ function sameConfirmationRequest(
   );
 }
 
-function parseChatCompletionsStream(body) {
-  let translation = "";
-  let completed = false;
+function errorMessage(code) {
+  const messages = {
+    configuration_error: "服务配置无效。",
+    authentication_error: "API Key 鉴权失败。",
+    permission_error: "模型服务拒绝访问。",
+    request_rejected: "模型服务拒绝了请求。",
+    rate_limited: "请求过于频繁，请稍后由你重新发起。",
+    server_error: "模型服务暂时不可用，请稍后由你重新发起。",
+    network_error: "无法连接模型服务，请检查网络后重新发起。",
+    tls_error: "模型服务的安全连接失败。",
+    timeout: "模型服务请求超时。",
+    cancelled: "翻译已取消。",
+    response_too_large: "模型服务响应超过大小限制。",
+    protocol_error: "模型服务返回了无法识别的响应。",
+    content_rejected: "模型服务拒绝处理该文本。",
+    unknown_error: "翻译请求失败。",
+  };
+  return messages[code] || messages.unknown_error;
+}
 
-  for (const rawLine of body.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith(":")) {
-      continue;
-    }
-    if (!line.startsWith("data:")) {
-      throw new Error("流式响应包含无法识别的内容。");
-    }
-
-    const data = line.slice(5).trim();
-    if (data === "[DONE]") {
-      completed = true;
-      continue;
-    }
-
-    const event = JSON.parse(data);
-    if (!Array.isArray(event.choices)) {
-      throw new Error("流式响应缺少 choices。");
-    }
-    for (const choice of event.choices) {
-      const content = choice && choice.delta && choice.delta.content;
-      if (content === null || content === undefined) {
-        continue;
-      }
-      if (typeof content !== "string") {
-        throw new Error("流式响应包含非文本内容。");
-      }
-      translation += content;
-    }
+function mapHttpError(status) {
+  if (status === 401) return "authentication_error";
+  if (status === 403) return "permission_error";
+  if (status === 408 || status === 504) return "timeout";
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "server_error";
+  if ([400, 402, 404, 405, 413, 422].includes(status)) {
+    return "request_rejected";
   }
+  return "unknown_error";
+}
 
-  if (!completed) {
-    throw new Error("流式响应没有完成标记。");
+function mapTransportError(error) {
+  const stableCodes = new Set([
+    "configuration_error",
+    "authentication_error",
+    "permission_error",
+    "request_rejected",
+    "rate_limited",
+    "server_error",
+    "network_error",
+    "tls_error",
+    "timeout",
+    "cancelled",
+    "response_too_large",
+    "protocol_error",
+    "content_rejected",
+    "unknown_error",
+  ]);
+  if (error && stableCodes.has(error.code)) {
+    return error.code;
   }
-  return translation;
+  const code = error && error.code;
+  if (["ETIMEDOUT", "ERR_SOCKET_TIMEOUT", "ESOCKETTIMEDOUT"].includes(code)) {
+    return "timeout";
+  }
+  if (
+    typeof code === "string" &&
+    (code.startsWith("ERR_TLS") ||
+      code.startsWith("CERT_") ||
+      code.includes("SSL") ||
+      [
+        "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        "DEPTH_ZERO_SELF_SIGNED_CERT",
+        "SELF_SIGNED_CERT_IN_CHAIN",
+        "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+        "CERT_UNTRUSTED",
+      ].includes(code))
+  ) {
+    return "tls_error";
+  }
+  if (
+    [
+      "ECONNABORTED",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EHOSTUNREACH",
+      "ENETUNREACH",
+      "ENOTFOUND",
+      "EAI_AGAIN",
+      "EPIPE",
+    ].includes(code)
+  ) {
+    return "network_error";
+  }
+  return "unknown_error";
 }
 
 function createRuyiRuntime({
@@ -121,6 +170,9 @@ function createRuyiRuntime({
   tokenFactory = () => randomBytes(24).toString("hex"),
 }) {
   const pendingConfirmations = new Map();
+  const preparingTaskIds = new Set();
+  const cancelledPreparingTaskIds = new Set();
+  let activeTask = null;
 
   function readSettings() {
     const existing = plainStorage.getItem(SETTINGS_KEY);
@@ -215,7 +267,7 @@ function createRuyiRuntime({
     return getServiceConfiguration();
   }
 
-  async function startStandardTranslation(request) {
+  async function startStandardTranslation(request, onProgress = () => undefined) {
     if (
       !request ||
       typeof request.sourceText !== "string" ||
@@ -224,6 +276,15 @@ function createRuyiRuntime({
       return {
         status: "validation_error",
         reason: "invalid_source_text",
+        sourceRetained: true,
+      };
+    }
+
+    const sourceInspection = inspectSourceText(request.sourceText);
+    if (!sourceInspection.valid) {
+      return {
+        status: "validation_error",
+        reason: "source_text_too_long",
         sourceRetained: true,
       };
     }
@@ -237,7 +298,22 @@ function createRuyiRuntime({
       };
     }
 
-    const state = await getServiceConfiguration();
+    preparingTaskIds.add(request.taskId);
+    let state;
+    try {
+      state = await getServiceConfiguration();
+    } finally {
+      preparingTaskIds.delete(request.taskId);
+    }
+
+    if (cancelledPreparingTaskIds.delete(request.taskId)) {
+      return {
+        status: "failed",
+        taskId: request.taskId,
+        sourceRetained: true,
+        error: { code: "cancelled", message: errorMessage("cancelled") },
+      };
+    }
 
     if (!state.serviceConfiguration) {
       return {
@@ -261,9 +337,37 @@ function createRuyiRuntime({
     const configuration = settings.serviceConfigurations.find(
       (candidate) => candidate.id === settings.currentServiceConfigurationId,
     );
-    const normalizedTranslationUrl = new URL(
-      configuration.translationUrl,
-    ).toString();
+    let normalizedTranslationUrl;
+    try {
+      const parsedTranslationUrl = new URL(configuration.translationUrl);
+      const apiKey = cryptoStorage.getItem(`${API_KEY_PREFIX}${configuration.id}`);
+      const urlContainsApiKey =
+        typeof apiKey === "string" &&
+        apiKey.length > 0 &&
+        (parsedTranslationUrl.username === apiKey ||
+          parsedTranslationUrl.password === apiKey ||
+          [...parsedTranslationUrl.searchParams.values()].some(
+            (value) => value === apiKey,
+          ));
+      if (
+        parsedTranslationUrl.username ||
+        parsedTranslationUrl.password ||
+        urlContainsApiKey
+      ) {
+        throw new Error("服务地址包含凭据。");
+      }
+      normalizedTranslationUrl = parsedTranslationUrl.toString();
+    } catch {
+      return {
+        status: "failed",
+        taskId: request.taskId,
+        sourceRetained: true,
+        error: {
+          code: "configuration_error",
+          message: errorMessage("configuration_error"),
+        },
+      };
+    }
 
     if (configuration.confirmedTranslationUrl !== normalizedTranslationUrl) {
       const pending = request.confirmationToken
@@ -346,30 +450,117 @@ function createRuyiRuntime({
       stream: configuration.stream,
       thinking: { type: "disabled" },
     });
-    const response = await transport.request({
-      url: normalizedTranslationUrl,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${apiKey}`,
+    if (activeTask) {
+      activeTask.controller.abort();
+    }
+    const controller = new AbortController();
+    const task = { taskId: request.taskId, controller };
+    activeTask = task;
+    function emitProgress(event) {
+      try {
+        onProgress(event);
+      } catch {
+        // Progress observers are presentation concerns and must not break a request.
+      }
+    }
+    const parser = createChatSseParser({
+      onTextDelta(delta) {
+        if (activeTask !== task || controller.signal.aborted) {
+          return;
+        }
+        emitProgress({ type: "text_delta", taskId: request.taskId, delta });
       },
-      body,
     });
+    emitProgress({ type: "started", taskId: request.taskId });
 
-    if (response.status !== 200) {
+    try {
+      let sawData = false;
+      const response = await transport.request({
+        url: normalizedTranslationUrl,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body,
+        signal: controller.signal,
+        onData(chunk) {
+          if (activeTask !== task || controller.signal.aborted) {
+            return;
+          }
+          sawData = true;
+          parser.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        },
+      });
+
+      if (activeTask !== task || controller.signal.aborted) {
+        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
+      }
+
+      if (response.status !== 200) {
+        const code = mapHttpError(response.status);
+        const requestId = response.headers && response.headers["x-request-id"];
+        emitProgress({
+          type: "finished",
+          taskId: request.taskId,
+          status: "failed",
+        });
+        return {
+          status: "failed",
+          taskId: request.taskId,
+          sourceRetained: true,
+          error: {
+            code,
+            message: errorMessage(code),
+            httpStatus: response.status,
+            ...(typeof requestId === "string" ? { requestId } : {}),
+          },
+        };
+      }
+
+      if (!sawData && response.body) {
+        parser.push(Buffer.from(response.body));
+      }
+      parser.end();
+      const translation = parser.translation();
+      emitProgress({
+        type: "finished",
+        taskId: request.taskId,
+        status: "completed",
+      });
+      return { status: "completed", taskId: request.taskId, translation };
+    } catch (error) {
+      const code =
+        activeTask !== task || controller.signal.aborted
+          ? "cancelled"
+          : mapTransportError(error);
+      const partialTranslation =
+        error && typeof error.partialTranslation === "string"
+          ? error.partialTranslation
+          : parser.translation();
+      emitProgress({
+        type: "finished",
+        taskId: request.taskId,
+        status: code === "cancelled" ? "cancelled" : "failed",
+      });
       return {
         status: "failed",
         taskId: request.taskId,
         sourceRetained: true,
-        error: { code: "request_rejected", message: "模型服务拒绝了请求。" },
+        ...(partialTranslation ? { partialTranslation } : {}),
+        error: {
+          code,
+          message:
+            error && typeof error.safeMessage === "string"
+              ? error.safeMessage
+              : errorMessage(code),
+        },
       };
+    } finally {
+      if (activeTask === task) {
+        activeTask = null;
+      }
     }
-
-    return {
-      status: "completed",
-      taskId: request.taskId,
-      translation: parseChatCompletionsStream(response.body),
-    };
   }
 
   function cancelTranslation(taskId) {
@@ -377,6 +568,12 @@ function createRuyiRuntime({
       if (pending.taskId === taskId) {
         pendingConfirmations.delete(token);
       }
+    }
+    if (preparingTaskIds.has(taskId)) {
+      cancelledPreparingTaskIds.add(taskId);
+    }
+    if (activeTask && activeTask.taskId === taskId) {
+      activeTask.controller.abort();
     }
   }
 

@@ -54,7 +54,8 @@ label {
 
 textarea,
 [type="password"],
-[aria-label="译文"] {
+[aria-label="译文"],
+[aria-label="部分译文"] {
   min-height: 190px;
   padding: 16px;
   border: 1px solid #d7cde2;
@@ -148,6 +149,26 @@ button:disabled {
   gap: 10px;
 }
 
+.translation-progress {
+  display: grid;
+  gap: 10px;
+}
+
+.translation-progress [role="status"] {
+  margin: 0;
+  color: #4f4658;
+}
+
+.translation-live-text {
+  min-height: 72px;
+  padding: 14px;
+  border: 1px solid #d7cde2;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 72%);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 [role="alert"] {
   margin: 0;
   color: #a3263e;
@@ -175,7 +196,8 @@ button:disabled {
 
   textarea,
   [type="password"],
-  [aria-label="译文"] {
+  [aria-label="译文"],
+  [aria-label="部分译文"] {
     border-color: #4b4058;
     background: rgb(38 33 44 / 88%);
   }
@@ -186,8 +208,13 @@ button:disabled {
   }
 
   .configuration-card,
-  .confirmation-card {
+  .confirmation-card,
+  .translation-live-text {
     border-color: #4b4058;
     background: rgb(38 33 44 / 80%);
+  }
+
+  .translation-progress [role="status"] {
+    color: #cbc2d4;
   }
 }
