@@ -1,0 +1,715 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ruyi-translate.local/schemas/ruyi-translate-v1.schema.json",
+  "title": "Ruyi Translation v1 prompt contracts",
+  "description": "Strict input and structured-output contracts for ruyi-prompts-v1. Cross-reference, ordering, Unicode code-point range, and set-partition rules are validated by application code after JSON Schema validation.",
+  "oneOf": [
+    { "$ref": "#/$defs/analysisInput" },
+    { "$ref": "#/$defs/analysisOutput" },
+    { "$ref": "#/$defs/translationInput" },
+    { "$ref": "#/$defs/accuracyReviewInput" },
+    { "$ref": "#/$defs/accuracyReviewOutput" },
+    { "$ref": "#/$defs/languageReviewInput" },
+    { "$ref": "#/$defs/languageReviewOutput" },
+    { "$ref": "#/$defs/revisionInput" },
+    { "$ref": "#/$defs/revisionOutput" }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$"
+    },
+    "nonEmptyText200": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "nullableText500": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "maxLength": 500 }
+      ]
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "codePointRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "end": { "type": "integer", "minimum": 0, "maximum": 100000 }
+      }
+    },
+    "nullableCodePointRange": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/codePointRange" }
+      ]
+    },
+    "targetLanguage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "modelLabel"],
+          "properties": {
+            "kind": { "const": "preset" },
+            "id": { "$ref": "#/$defs/identifier" },
+            "modelLabel": { "type": "string", "minLength": 1, "maxLength": 50 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "modelLabel"],
+          "properties": {
+            "kind": { "const": "custom" },
+            "modelLabel": { "type": "string", "minLength": 1, "maxLength": 50 }
+          }
+        }
+      ]
+    },
+    "matchedTerm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source",
+        "preferredTarget",
+        "sourceLanguage",
+        "targetLanguage",
+        "allowedVariants",
+        "forbiddenTargets",
+        "aliases",
+        "meaning",
+        "strictness",
+        "caseSensitive",
+        "priority",
+        "origin"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "source": { "$ref": "#/$defs/nonEmptyText200" },
+        "preferredTarget": { "$ref": "#/$defs/nonEmptyText200" },
+        "sourceLanguage": { "$ref": "#/$defs/nonEmptyText200" },
+        "targetLanguage": { "$ref": "#/$defs/nonEmptyText200" },
+        "allowedVariants": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyText200" }
+        },
+        "forbiddenTargets": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyText200" }
+        },
+        "aliases": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyText200" }
+        },
+        "meaning": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "maxLength": 1000 }
+          ]
+        },
+        "strictness": { "enum": ["preferred", "exact"] },
+        "caseSensitive": { "type": "boolean" },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "origin": { "enum": ["task", "domain", "general"] }
+      }
+    },
+    "domainProfile": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "name", "field", "documentType", "audience", "style", "preserveRules"],
+          "properties": {
+            "id": { "$ref": "#/$defs/identifier" },
+            "version": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "name": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "field": { "$ref": "#/$defs/nullableText500" },
+            "documentType": { "$ref": "#/$defs/nullableText500" },
+            "audience": { "$ref": "#/$defs/nullableText500" },
+            "style": { "$ref": "#/$defs/nullableText500" },
+            "preserveRules": {
+              "type": "array",
+              "maxItems": 20,
+              "items": { "type": "string", "maxLength": 500 }
+            }
+          }
+        }
+      ]
+    },
+    "referenceTranslation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sourceLanguage", "targetLanguage", "domainProfileId", "source", "translation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "sourceLanguage": { "$ref": "#/$defs/nonEmptyText200" },
+        "targetLanguage": { "$ref": "#/$defs/nonEmptyText200" },
+        "domainProfileId": { "$ref": "#/$defs/identifier" },
+        "source": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "translation": { "type": "string", "minLength": 1, "maxLength": 2000 }
+      }
+    },
+    "targetExample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "targetLanguage", "domainProfileId", "translation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "targetLanguage": { "$ref": "#/$defs/nonEmptyText200" },
+        "domainProfileId": { "$ref": "#/$defs/identifier" },
+        "translation": { "type": "string", "minLength": 1, "maxLength": 2000 }
+      }
+    },
+    "protectedItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "segmentId", "type", "sourceValue", "sourceRange"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "segmentId": { "$ref": "#/$defs/identifier" },
+        "type": {
+          "enum": ["number", "date", "unit", "url", "email", "placeholder", "inline_code", "code_block", "path"]
+        },
+        "sourceValue": { "type": "string", "minLength": 1, "maxLength": 10000 },
+        "sourceRange": { "$ref": "#/$defs/codePointRange" }
+      }
+    },
+    "baseTaskData": {
+      "type": "object",
+      "required": [
+        "taskId",
+        "targetLanguage",
+        "domainProfile",
+        "matchedTerms",
+        "referenceTranslations",
+        "additionalRequirements",
+        "protectedItems"
+      ],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/identifier" },
+        "targetLanguage": { "$ref": "#/$defs/targetLanguage" },
+        "domainProfile": { "$ref": "#/$defs/domainProfile" },
+        "matchedTerms": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/matchedTerm" }
+        },
+        "referenceTranslations": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/referenceTranslation" }
+        },
+        "additionalRequirements": { "type": "string", "maxLength": 2000 },
+        "protectedItems": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/protectedItem" }
+        }
+      }
+    },
+    "segmentIdentity": {
+      "type": "object",
+      "required": ["id", "ordinal", "sourceStart", "sourceEnd"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "sourceStart": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "sourceEnd": { "type": "integer", "minimum": 0, "maximum": 10000 }
+      }
+    },
+    "analysisInput": {
+      "allOf": [
+        { "$ref": "#/$defs/baseTaskData" },
+        {
+          "type": "object",
+          "required": ["schemaVersion", "sourceText", "segments"],
+          "properties": {
+            "schemaVersion": { "const": "analysis-input.v1" },
+            "sourceText": { "type": "string", "minLength": 1, "maxLength": 10000 },
+            "segments": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10000,
+              "items": {
+                "allOf": [
+                  { "$ref": "#/$defs/segmentIdentity" }
+                ],
+                "unevaluatedProperties": false
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "analysisOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "taskId",
+        "detectedSourceLanguage",
+        "inferredDomain",
+        "documentType",
+        "audience",
+        "tone",
+        "ambiguities",
+        "termApplicability",
+        "risks"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "analysis-output.v1" },
+        "taskId": { "$ref": "#/$defs/identifier" },
+        "detectedSourceLanguage": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "inferredDomain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "confidence"],
+          "properties": {
+            "name": {
+              "oneOf": [
+                { "type": "null" },
+                { "type": "string", "maxLength": 500 }
+              ]
+            },
+            "confidence": { "enum": ["low", "medium", "high"] }
+          }
+        },
+        "documentType": { "$ref": "#/$defs/nullableText500" },
+        "audience": { "$ref": "#/$defs/nullableText500" },
+        "tone": { "$ref": "#/$defs/nullableText500" },
+        "ambiguities": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["segmentId", "sourceRange", "category", "note"],
+            "properties": {
+              "segmentId": { "$ref": "#/$defs/identifier" },
+              "sourceRange": { "$ref": "#/$defs/codePointRange" },
+              "category": { "enum": ["lexical", "reference", "scope", "domain", "other"] },
+              "note": { "$ref": "#/$defs/note" }
+            }
+          }
+        },
+        "termApplicability": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["termId", "applies", "note"],
+            "properties": {
+              "termId": { "$ref": "#/$defs/identifier" },
+              "applies": { "type": "boolean" },
+              "note": { "$ref": "#/$defs/note" }
+            }
+          }
+        },
+        "risks": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["segmentId", "category", "note"],
+            "properties": {
+              "segmentId": {
+                "oneOf": [
+                  { "type": "null" },
+                  { "$ref": "#/$defs/identifier" }
+                ]
+              },
+              "category": { "enum": ["mixed_domain", "mixed_language", "ambiguous_term", "format", "other"] },
+              "note": { "$ref": "#/$defs/note" }
+            }
+          }
+        }
+      }
+    },
+    "fullDocumentTranslationInput": {
+      "allOf": [
+        { "$ref": "#/$defs/baseTaskData" },
+        {
+          "type": "object",
+          "required": ["schemaVersion", "qualityMode", "mode", "analysis", "sourceText"],
+          "properties": {
+            "schemaVersion": { "const": "translation-input.v1" },
+            "qualityMode": { "enum": ["standard", "precision"] },
+            "mode": { "const": "full_document" },
+            "analysis": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/analysisOutput" }
+              ]
+            },
+            "sourceText": { "type": "string", "minLength": 1, "maxLength": 10000 }
+          }
+        },
+        {
+          "if": { "properties": { "qualityMode": { "const": "standard" } }, "required": ["qualityMode"] },
+          "then": { "properties": { "analysis": { "type": "null" } } },
+          "else": { "properties": { "analysis": { "$ref": "#/$defs/analysisOutput" } } }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "translationSegment": {
+      "allOf": [
+        { "$ref": "#/$defs/segmentIdentity" },
+        {
+          "type": "object",
+          "required": ["sourceContextBefore", "ownedSource", "sourceContextAfter"],
+          "properties": {
+            "sourceContextBefore": { "type": "string", "maxLength": 500 },
+            "ownedSource": { "type": "string", "minLength": 1, "maxLength": 3000 },
+            "sourceContextAfter": { "type": "string", "maxLength": 500 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "segmentTranslationInput": {
+      "allOf": [
+        { "$ref": "#/$defs/baseTaskData" },
+        {
+          "type": "object",
+          "required": ["schemaVersion", "qualityMode", "mode", "analysis", "segment"],
+          "properties": {
+            "schemaVersion": { "const": "translation-input.v1" },
+            "qualityMode": { "enum": ["standard", "precision"] },
+            "mode": { "const": "segment" },
+            "analysis": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/analysisOutput" }
+              ]
+            },
+            "segment": { "$ref": "#/$defs/translationSegment" }
+          }
+        },
+        {
+          "if": { "properties": { "qualityMode": { "const": "standard" } }, "required": ["qualityMode"] },
+          "then": { "properties": { "analysis": { "type": "null" } } },
+          "else": { "properties": { "analysis": { "$ref": "#/$defs/analysisOutput" } } }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "translationInput": {
+      "oneOf": [
+        { "$ref": "#/$defs/fullDocumentTranslationInput" },
+        { "$ref": "#/$defs/segmentTranslationInput" }
+      ]
+    },
+    "reviewSegment": {
+      "allOf": [
+        { "$ref": "#/$defs/segmentIdentity" },
+        {
+          "type": "object",
+          "required": ["source", "translation"],
+          "properties": {
+            "source": { "type": "string", "minLength": 1, "maxLength": 10000 },
+            "translation": { "type": "string", "maxLength": 100000 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "accuracyReviewInput": {
+      "allOf": [
+        { "$ref": "#/$defs/baseTaskData" },
+        {
+          "type": "object",
+          "required": ["schemaVersion", "analysis", "segments"],
+          "properties": {
+            "schemaVersion": { "const": "accuracy-review-input.v1" },
+            "analysis": { "$ref": "#/$defs/analysisOutput" },
+            "segments": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10000,
+              "items": { "$ref": "#/$defs/reviewSegment" }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "severity": { "enum": ["critical", "major", "minor"] },
+    "confidence": { "enum": ["low", "medium", "high"] },
+    "accuracyIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "segmentId", "type", "severity", "sourceRange", "translationRange", "suggestion", "confidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "segmentId": { "$ref": "#/$defs/identifier" },
+        "type": {
+          "enum": ["mistranslation", "omission", "addition", "number", "date", "unit", "proper_name", "terminology", "target_language", "protected_content", "instruction_injection", "other"]
+        },
+        "severity": { "$ref": "#/$defs/severity" },
+        "sourceRange": { "$ref": "#/$defs/nullableCodePointRange" },
+        "translationRange": { "$ref": "#/$defs/nullableCodePointRange" },
+        "suggestion": { "$ref": "#/$defs/note" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "accuracyReviewOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "taskId", "role", "issues"],
+      "properties": {
+        "schemaVersion": { "const": "review-output.v1" },
+        "taskId": { "$ref": "#/$defs/identifier" },
+        "role": { "const": "accuracy" },
+        "issues": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/accuracyIssue" }
+        }
+      }
+    },
+    "languageTranslation": {
+      "allOf": [
+        { "$ref": "#/$defs/segmentIdentity" },
+        {
+          "type": "object",
+          "required": ["translation"],
+          "properties": {
+            "translation": { "type": "string", "maxLength": 100000 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "languageReviewInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "taskId",
+        "targetLanguage",
+        "domainProfile",
+        "matchedTerms",
+        "targetExamples",
+        "additionalRequirements",
+        "translations"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "language-review-input.v1" },
+        "taskId": { "$ref": "#/$defs/identifier" },
+        "targetLanguage": { "$ref": "#/$defs/targetLanguage" },
+        "domainProfile": { "$ref": "#/$defs/domainProfile" },
+        "matchedTerms": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/matchedTerm" }
+        },
+        "targetExamples": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/targetExample" }
+        },
+        "additionalRequirements": { "type": "string", "maxLength": 2000 },
+        "translations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "items": { "$ref": "#/$defs/languageTranslation" }
+        }
+      }
+    },
+    "languageIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "segmentId", "type", "severity", "translationRange", "termId", "suggestion", "confidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "segmentId": { "$ref": "#/$defs/identifier" },
+        "type": { "enum": ["grammar", "fluency", "tone", "style", "consistency", "terminology_form", "other"] },
+        "severity": { "$ref": "#/$defs/severity" },
+        "translationRange": { "$ref": "#/$defs/codePointRange" },
+        "termId": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/identifier" }
+          ]
+        },
+        "suggestion": { "$ref": "#/$defs/note" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "languageReviewOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "taskId", "role", "issues"],
+      "properties": {
+        "schemaVersion": { "const": "review-output.v1" },
+        "taskId": { "$ref": "#/$defs/identifier" },
+        "role": { "const": "language" },
+        "issues": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/languageIssue" }
+        }
+      }
+    },
+    "normalizedAccuracyIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewRole", "id", "segmentId", "type", "severity", "sourceRange", "translationRange", "termId", "suggestion", "confidence"],
+      "properties": {
+        "reviewRole": { "const": "accuracy" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "segmentId": { "$ref": "#/$defs/identifier" },
+        "type": {
+          "enum": ["mistranslation", "omission", "addition", "number", "date", "unit", "proper_name", "terminology", "target_language", "protected_content", "instruction_injection", "other"]
+        },
+        "severity": { "$ref": "#/$defs/severity" },
+        "sourceRange": { "$ref": "#/$defs/nullableCodePointRange" },
+        "translationRange": { "$ref": "#/$defs/nullableCodePointRange" },
+        "termId": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/identifier" }
+          ]
+        },
+        "suggestion": { "$ref": "#/$defs/note" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "normalizedLanguageIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewRole", "id", "segmentId", "type", "severity", "sourceRange", "translationRange", "termId", "suggestion", "confidence"],
+      "properties": {
+        "reviewRole": { "const": "language" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "segmentId": { "$ref": "#/$defs/identifier" },
+        "type": { "enum": ["grammar", "fluency", "tone", "style", "consistency", "terminology_form", "other"] },
+        "severity": { "$ref": "#/$defs/severity" },
+        "sourceRange": { "type": "null" },
+        "translationRange": { "$ref": "#/$defs/codePointRange" },
+        "termId": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/identifier" }
+          ]
+        },
+        "suggestion": { "$ref": "#/$defs/note" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "normalizedRevisionIssue": {
+      "oneOf": [
+        { "$ref": "#/$defs/normalizedAccuracyIssue" },
+        { "$ref": "#/$defs/normalizedLanguageIssue" }
+      ]
+    },
+    "revisionSegment": {
+      "allOf": [
+        { "$ref": "#/$defs/segmentIdentity" },
+        {
+          "type": "object",
+          "required": [
+            "sourceContextBefore",
+            "source",
+            "sourceContextAfter",
+            "targetContextBefore",
+            "currentTranslation",
+            "targetContextAfter"
+          ],
+          "properties": {
+            "sourceContextBefore": { "type": "string", "maxLength": 500 },
+            "source": { "type": "string", "minLength": 1, "maxLength": 10000 },
+            "sourceContextAfter": { "type": "string", "maxLength": 500 },
+            "targetContextBefore": { "type": "string", "maxLength": 2000 },
+            "currentTranslation": { "type": "string", "maxLength": 100000 },
+            "targetContextAfter": { "type": "string", "maxLength": 2000 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "revisionInput": {
+      "allOf": [
+        { "$ref": "#/$defs/baseTaskData" },
+        {
+          "type": "object",
+          "required": ["schemaVersion", "analysis", "segments", "issues"],
+          "properties": {
+            "schemaVersion": { "const": "revision-input.v1" },
+            "analysis": { "$ref": "#/$defs/analysisOutput" },
+            "segments": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": { "$ref": "#/$defs/revisionSegment" }
+            },
+            "issues": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 200,
+              "items": { "$ref": "#/$defs/normalizedRevisionIssue" }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segmentId", "replacement", "resolvedIssueIds"],
+      "properties": {
+        "segmentId": { "$ref": "#/$defs/identifier" },
+        "replacement": { "type": "string", "maxLength": 100000 },
+        "resolvedIssueIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    },
+    "revisionOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "taskId", "revisions", "unresolvedIssueIds"],
+      "properties": {
+        "schemaVersion": { "const": "revision-output.v1" },
+        "taskId": { "$ref": "#/$defs/identifier" },
+        "revisions": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/revision" }
+        },
+        "unresolvedIssueIds": {
+          "type": "array",
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "main": "index.html",
+  "logo": "logo.svg",
+  "preload": "preload.js",
+  "development": {
+    "main": "http://127.0.0.1:5173/index.html"
+  },
+  "pluginSetting": {
+    "height": 640
+  },
+  "features": [
+    {
+      "code": "translate",
+      "explain": "翻译文本",
+      "cmds": [
+        "如意翻译",
+        "翻译",
+        "fy",
+        {
+          "type": "over",
+          "label": "用如意翻译",
+          "minLength": 1,
+          "maxLength": 10000
+        }
+      ]
+    },
+    {
+      "code": "settings",
+      "explain": "配置如意翻译",
+      "cmds": ["如意翻译设置"]
+    }
+  ]
+}

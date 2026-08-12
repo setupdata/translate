@@ -1,0 +1,38 @@
+import { createRoot } from "react-dom/client";
+
+import { App } from "./app/App";
+import "./styles.css";
+import { translateWithPreload } from "./translation/browser-translation-adapter";
+import { resolveEntryIntent } from "./utools/entry-intent";
+
+const rootElement = document.querySelector<HTMLDivElement>("#root");
+
+if (!rootElement) {
+  throw new Error("找不到应用挂载节点。");
+}
+
+const root = createRoot(rootElement);
+let renderSequence = 0;
+
+function render(intent: ReturnType<typeof resolveEntryIntent>): void {
+  renderSequence += 1;
+  root.render(
+    <App key={renderSequence} intent={intent} translate={translateWithPreload} />,
+  );
+}
+
+render(resolveEntryIntent({ code: "translate", type: "text", payload: "" }));
+
+window.utools?.onPluginEnter((action) => {
+  if (action.code !== "translate" && action.code !== "settings") {
+    return;
+  }
+
+  render(
+    resolveEntryIntent({
+      code: action.code,
+      type: action.type,
+      payload: action.payload,
+    }),
+  );
+});

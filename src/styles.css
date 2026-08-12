@@ -1,0 +1,122 @@
+:root {
+  color: #25212e;
+  background: #f5f2fb;
+  font-family:
+    Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 85% 5%, rgb(118 81 169 / 18%), transparent 35%),
+    #f5f2fb;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+main {
+  display: grid;
+  gap: 18px;
+  width: min(100%, 860px);
+  margin: 0 auto;
+  padding: 30px;
+}
+
+h1 {
+  margin: 0;
+  color: #4c3269;
+  font-size: 28px;
+  letter-spacing: 0.02em;
+}
+
+form {
+  display: grid;
+  gap: 10px;
+}
+
+label {
+  color: #5c5565;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+textarea,
+[aria-label="译文"] {
+  min-height: 190px;
+  padding: 16px;
+  border: 1px solid #d7cde2;
+  border-radius: 14px;
+  color: inherit;
+  background: rgb(255 255 255 / 82%);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  box-shadow: 0 12px 36px rgb(51 36 67 / 8%);
+}
+
+textarea {
+  resize: vertical;
+}
+
+textarea:focus-visible,
+button:focus-visible {
+  outline: 3px solid rgb(106 70 145 / 30%);
+  outline-offset: 2px;
+}
+
+button {
+  justify-self: end;
+  min-width: 116px;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: #63407f;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #4e3167;
+}
+
+[role="alert"] {
+  margin: 0;
+  color: #a3263e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f0ebf5;
+    background: #18151d;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at 85% 5%, rgb(126 88 174 / 24%), transparent 35%),
+      #18151d;
+  }
+
+  h1 {
+    color: #dbc7ef;
+  }
+
+  label {
+    color: #cbc2d4;
+  }
+
+  textarea,
+  [aria-label="译文"] {
+    border-color: #4b4058;
+    background: rgb(38 33 44 / 88%);
+  }
+}

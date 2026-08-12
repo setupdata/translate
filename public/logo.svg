@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="如意翻译">
+  <defs>
+    <linearGradient id="background" x1="36" y1="28" x2="220" y2="228" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7657ff"/>
+      <stop offset="1" stop-color="#4a2bc7"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#background)"/>
+  <path d="M70 76h78M109 52v24M80 98c12 34 35 58 70 74M142 98c-12 34-35 58-70 74" fill="none" stroke="#fff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M156 122h30l28 74M201 164h-60M151 196l27-74" fill="none" stroke="#d8ff72" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
