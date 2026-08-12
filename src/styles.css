@@ -251,6 +251,64 @@ button:disabled {
   border-radius: 12px;
 }
 
+.terminology-editor textarea {
+  min-height: 76px;
+}
+
+.term-entry {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid #d7cde2;
+  border-radius: 12px;
+}
+
+.task-terms-editor,
+.task-term-row {
+  display: grid;
+  gap: 10px;
+}
+
+.task-terms-editor {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid #d7cde2;
+  border-radius: 12px;
+}
+
+.task-terms-editor p {
+  margin: 0;
+  color: #6a6173;
+  font-size: 13px;
+}
+
+.task-term-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.task-term-row label {
+  display: grid;
+  gap: 6px;
+}
+
+.task-term-row button {
+  min-width: auto;
+}
+
+.terminology-conflicts h2,
+.terminology-conflicts h3,
+.terminology-conflicts p {
+  margin: 0;
+}
+
+.term-entry label,
+.terminology-editor label:not(.checkbox-label) {
+  display: grid;
+  gap: 6px;
+}
+
 .translation-actions {
   display: flex;
   flex-wrap: wrap;
@@ -307,6 +365,16 @@ button:disabled {
   color: #a3263e;
 }
 
+@media (max-width: 600px) {
+  main {
+    padding: 18px;
+  }
+
+  .task-term-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f0ebf5;
@@ -348,6 +416,8 @@ button:disabled {
   .confirmation-card,
   .service-configuration-card,
   .service-request-tools,
+  .task-terms-editor,
+  .term-entry,
   .quality-risks,
   .translation-live-text {
     border-color: #4b4058;

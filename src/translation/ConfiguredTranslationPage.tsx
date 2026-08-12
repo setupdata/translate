@@ -9,6 +9,7 @@ import type {
   StandardTranslationResult,
   TaskTerm,
   TargetLanguage,
+  TerminologyState,
 } from "../runtime/contracts";
 
 type ConfiguredTranslationPageProps = {
@@ -21,6 +22,7 @@ type StartTranslationOptions = {
   confirmationToken?: string;
   beginNewTask?: boolean;
   targetLanguage: TargetLanguage;
+  domainProfileId: string | null;
   additionalRequirements: string;
   taskTerms: TaskTerm[];
 };
@@ -46,6 +48,7 @@ function buildCurrentInputs(
   sourceText: string,
   targetLanguage: TargetLanguage,
   serviceConfigurationId: string | null,
+  domainProfileId: string | null,
   additionalRequirements: string,
   taskTerms: TaskTerm[],
 ): CurrentTranslationInputs {
@@ -53,6 +56,7 @@ function buildCurrentInputs(
     sourceText,
     targetLanguage,
     serviceConfigurationId,
+    domainProfileId,
     qualityMode: "standard",
     additionalRequirements,
     taskTerms,
@@ -70,6 +74,8 @@ export function ConfiguredTranslationPage({
   );
   const [additionalRequirements, setAdditionalRequirements] = useState("");
   const [taskTerms, setTaskTerms] = useState<TaskTerm[]>([]);
+  const [domainProfiles, setDomainProfiles] = useState<TerminologyState["domainProfiles"]>([]);
+  const [domainProfileId, setDomainProfileId] = useState<string | null>(null);
   const [configuration, setConfiguration] =
     useState<RuntimeConfigurationState | null>(null);
   const [serviceConfigurations, setServiceConfigurations] = useState<
@@ -99,6 +105,7 @@ export function ConfiguredTranslationPage({
         setTargetLanguage(INITIAL_TARGET_LANGUAGE);
         setAdditionalRequirements("");
         setTaskTerms([]);
+        setDomainProfileId(null);
         setResult(null);
         setPartialTranslation("");
         setIsTranslating(false);
@@ -111,6 +118,7 @@ export function ConfiguredTranslationPage({
       setTargetLanguage(snapshot.inputs.targetLanguage);
       setAdditionalRequirements(snapshot.inputs.additionalRequirements);
       setTaskTerms(snapshot.inputs.taskTerms);
+      setDomainProfileId(snapshot.inputs.domainProfileId ?? null);
       setResult(snapshot.result);
       setPartialTranslation(snapshot.partialTranslation);
       setIsTranslating(snapshot.phase === "translating");
@@ -128,15 +136,25 @@ export function ConfiguredTranslationPage({
       language = targetLanguage,
       requirements = additionalRequirements,
       serviceConfigurationId = configuration?.serviceConfiguration?.id ?? null,
+      selectedDomainProfileId = domainProfileId,
+      selectedTaskTerms = taskTerms,
     ): CurrentTranslationInputs =>
       buildCurrentInputs(
         source,
         language,
         serviceConfigurationId,
+        selectedDomainProfileId,
         requirements,
-        taskTerms,
+        selectedTaskTerms,
       ),
-    [additionalRequirements, configuration, sourceText, targetLanguage, taskTerms],
+    [
+      additionalRequirements,
+      configuration,
+      domainProfileId,
+      sourceText,
+      targetLanguage,
+      taskTerms,
+    ],
   );
 
   const publishInputs = useCallback(
@@ -194,6 +212,7 @@ export function ConfiguredTranslationPage({
         setTargetLanguage(options.targetLanguage);
         setAdditionalRequirements(options.additionalRequirements);
         setTaskTerms(options.taskTerms);
+        setDomainProfileId(options.domainProfileId);
       }
       const generation = ++requestGeneration.current;
       setResult(null);
@@ -204,6 +223,7 @@ export function ConfiguredTranslationPage({
         text,
         options.targetLanguage,
         state.serviceConfiguration?.id ?? null,
+        options.domainProfileId,
         options.additionalRequirements,
         options.taskTerms,
       );
@@ -213,6 +233,7 @@ export function ConfiguredTranslationPage({
           sourceText: text,
           targetLanguage: options.targetLanguage,
           serviceConfigurationId: state.serviceConfiguration?.id ?? null,
+          domainProfileId: options.domainProfileId,
           additionalRequirements: options.additionalRequirements,
           taskTerms: submittedInputs.taskTerms,
           confirmationToken: options.confirmationToken,
@@ -263,8 +284,9 @@ export function ConfiguredTranslationPage({
         initialText,
         previousInputs?.targetLanguage ?? INITIAL_TARGET_LANGUAGE,
         previousInputs?.serviceConfigurationId ?? null,
+        previousInputs?.domainProfileId ?? null,
         previousInputs?.additionalRequirements ?? "",
-        previousInputs?.taskTerms ?? [],
+        [],
       );
       runtime.updateCurrentTranslationInputs(replacementInputs);
       setSourceText(replacementInputs.sourceText);
@@ -278,9 +300,11 @@ export function ConfiguredTranslationPage({
       setHostActionMessage("");
       setSnapshotStale(false);
     }
-    void runtime
-      .getServiceConfiguration()
-      .then(async (state) => {
+    void Promise.all([
+      runtime.getServiceConfiguration(),
+      runtime.getTerminologyState(),
+    ])
+      .then(async ([state, terminology]) => {
         if (
           !active ||
           selectionGeneration !== serviceSelectionGeneration.current
@@ -288,6 +312,11 @@ export function ConfiguredTranslationPage({
           return;
         }
         setConfiguration(state);
+        setDomainProfiles(terminology.domainProfiles);
+        const selectedDomainProfileId = previousInputs
+          ? previousInputs.domainProfileId
+          : terminology.currentDomainProfileId;
+        setDomainProfileId(selectedDomainProfileId);
         if (deferredGeneration !== deferredActionGeneration.current) {
           return;
         }
@@ -297,7 +326,7 @@ export function ConfiguredTranslationPage({
           const autoRequirements =
             previousInputs?.additionalRequirements ??
             state.defaults.additionalRequirements;
-          const autoTaskTerms = previousInputs?.taskTerms ?? [];
+          const autoTaskTerms: TaskTerm[] = [];
           setTargetLanguage(autoTargetLanguage);
           setAdditionalRequirements(autoRequirements);
           setTaskTerms(autoTaskTerms);
@@ -306,6 +335,7 @@ export function ConfiguredTranslationPage({
             initialText,
             {
               targetLanguage: autoTargetLanguage,
+              domainProfileId: selectedDomainProfileId,
               additionalRequirements: autoRequirements,
               taskTerms: autoTaskTerms,
             },
@@ -317,6 +347,7 @@ export function ConfiguredTranslationPage({
             sourceText: initialText,
             targetLanguage: state.defaults.targetLanguage,
             serviceConfigurationId: state.serviceConfiguration?.id ?? null,
+            domainProfileId: selectedDomainProfileId,
             qualityMode: "standard",
             additionalRequirements: state.defaults.additionalRequirements,
             taskTerms: [],
@@ -355,6 +386,21 @@ export function ConfiguredTranslationPage({
       ? result.quality
       : undefined;
   const resultIsStale = snapshotStale;
+
+  function replaceTaskTerms(nextTaskTerms: TaskTerm[]) {
+    deferredActionGeneration.current += 1;
+    setTaskTerms(nextTaskTerms);
+    publishInputs(
+      currentInputs(
+        sourceText,
+        targetLanguage,
+        additionalRequirements,
+        configuration?.serviceConfiguration?.id ?? null,
+        domainProfileId,
+        nextTaskTerms,
+      ),
+    );
+  }
 
   useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
@@ -408,6 +454,7 @@ export function ConfiguredTranslationPage({
             void startTranslation(configuration, sourceText, {
               beginNewTask: true,
               targetLanguage,
+              domainProfileId,
               additionalRequirements,
               taskTerms,
             });
@@ -442,14 +489,11 @@ export function ConfiguredTranslationPage({
                       return;
                     }
                     setConfiguration(selectedConfiguration);
-                    publishInputs(
-                      currentInputs(
-                        sourceText,
-                        targetLanguage,
-                        additionalRequirements,
-                        configurationId,
-                      ),
-                    );
+                    const latestInputs = runtime.getCurrentTranslation()?.inputs;
+                    publishInputs({
+                      ...(latestInputs ?? currentInputs()),
+                      serviceConfigurationId: configurationId,
+                    });
                   })
                   .catch(() => {
                     if (
@@ -469,6 +513,37 @@ export function ConfiguredTranslationPage({
             </select>
           </>
         )}
+        <label htmlFor="domain-profile">行业配置</label>
+        <select
+          id="domain-profile"
+          value={domainProfileId ?? ""}
+          onChange={(event) => {
+            const nextDomainProfileId = event.target.value || null;
+            deferredActionGeneration.current += 1;
+            setDomainProfileId(nextDomainProfileId);
+            void runtime
+              .setCurrentDomainProfile(nextDomainProfileId)
+              .then((terminology) => {
+                if (!mounted.current) return;
+                setDomainProfiles(terminology.domainProfiles);
+                const latestInputs = runtime.getCurrentTranslation()?.inputs;
+                publishInputs({
+                  ...(latestInputs ?? currentInputs()),
+                  domainProfileId: nextDomainProfileId,
+                });
+              })
+              .catch(() => {
+                if (mounted.current) setErrorMessage("行业配置切换失败。");
+              });
+          }}
+        >
+          <option value="">不使用行业配置</option>
+          {domainProfiles.map((domainProfile) => (
+            <option value={domainProfile.id} key={domainProfile.id}>
+              {domainProfile.name}
+            </option>
+          ))}
+        </select>
         <label htmlFor="source-text">源文本</label>
         <textarea
           id="source-text"
@@ -489,6 +564,7 @@ export function ConfiguredTranslationPage({
                   {
                     beginNewTask: true,
                     targetLanguage,
+                    domainProfileId,
                     additionalRequirements,
                     taskTerms,
                   },
@@ -530,6 +606,66 @@ export function ConfiguredTranslationPage({
             );
           }}
         />
+        <fieldset className="task-terms-editor">
+          <legend>本次术语</legend>
+          <p>本次术语优先于行业术语和通用术语，只保留在当前翻译内存中。</p>
+          {taskTerms.map((term, index) => (
+            <div className="task-term-row" key={`task-term-${index}`}>
+              <label>
+                源术语
+                <input
+                  aria-label={index === 0 ? "本次术语源术语" : `本次术语源术语 ${index + 1}`}
+                  value={term.sourceTerm}
+                  onChange={(event) =>
+                    replaceTaskTerms(
+                      taskTerms.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, sourceTerm: event.target.value }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label>
+                译法
+                <input
+                  aria-label={index === 0 ? "本次术语译法" : `本次术语译法 ${index + 1}`}
+                  value={term.preferredTarget}
+                  onChange={(event) =>
+                    replaceTaskTerms(
+                      taskTerms.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, preferredTarget: event.target.value }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <button
+                type="button"
+                aria-label={`删除本次术语 ${index + 1}`}
+                onClick={() =>
+                  replaceTaskTerms(taskTerms.filter((_, itemIndex) => itemIndex !== index))
+                }
+              >
+                删除
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              replaceTaskTerms([
+                ...taskTerms,
+                { sourceTerm: "", preferredTarget: "" },
+              ])
+            }
+          >
+            新增本次术语
+          </button>
+        </fieldset>
         <button type="submit" disabled={!configuration}>
           开始翻译
         </button>
@@ -537,7 +673,7 @@ export function ConfiguredTranslationPage({
           type="button"
           onClick={() => {
             requestGeneration.current += 1;
-            deferredActionGeneration.current += 1;
+            const clearGeneration = ++deferredActionGeneration.current;
             runtime.clearCurrentTranslation();
             taskId.current = createTaskId();
             applyCurrentSnapshot(null);
@@ -548,6 +684,25 @@ export function ConfiguredTranslationPage({
               configuration?.defaults.additionalRequirements ?? "",
             );
             setErrorMessage("");
+            void runtime
+              .getTerminologyState()
+              .then((terminology) => {
+                if (
+                  mounted.current &&
+                  clearGeneration === deferredActionGeneration.current
+                ) {
+                  setDomainProfiles(terminology.domainProfiles);
+                  setDomainProfileId(terminology.currentDomainProfileId);
+                }
+              })
+              .catch(() => {
+                if (
+                  mounted.current &&
+                  clearGeneration === deferredActionGeneration.current
+                ) {
+                  setErrorMessage("无法读取行业配置。");
+                }
+              });
           }}
         >
           清空当前内容
@@ -611,6 +766,7 @@ export function ConfiguredTranslationPage({
                   }
                   await startTranslation(savedState, sourceText, {
                     targetLanguage,
+                    domainProfileId,
                     additionalRequirements,
                     taskTerms,
                   });
@@ -680,6 +836,7 @@ export function ConfiguredTranslationPage({
                     {
                       confirmationToken: confirmation.confirmationToken,
                       targetLanguage,
+                      domainProfileId,
                       additionalRequirements,
                       taskTerms,
                     },
@@ -690,6 +847,50 @@ export function ConfiguredTranslationPage({
               同意并发送
             </button>
           </div>
+        </section>
+      ) : null}
+
+      {result?.status === "validation_error" &&
+      result.reason === "terminology_conflict" &&
+      result.terminologyConflicts ? (
+        <section
+          className="configuration-card terminology-conflicts"
+          aria-labelledby="terminology-conflicts-heading"
+        >
+          <h2 id="terminology-conflicts-heading">术语冲突</h2>
+          <p role="alert">
+            同一优先级的严格术语给出了不同译法。请选择本次翻译采用的译法。
+          </p>
+          {result.terminologyConflicts.map((conflict) => (
+            <div key={conflict.source}>
+              <h3>{conflict.source}</h3>
+              <div className="compact-actions">
+                {conflict.choices.map((choice) => (
+                  <button
+                    type="button"
+                    aria-label={`使用译法 ${choice.preferredTarget}`}
+                    key={`${choice.termId}:${choice.preferredTarget}`}
+                    onClick={() => {
+                      const nextTaskTerms = [
+                        ...taskTerms.filter((term) => term.sourceTerm !== conflict.source),
+                        {
+                          sourceTerm: conflict.source,
+                          preferredTarget: choice.preferredTarget,
+                        },
+                      ];
+                      replaceTaskTerms(nextTaskTerms);
+                      setResult(null);
+                      setHostActionMessage(
+                        `已将“${conflict.source}”加入本次术语，请重新开始翻译。`,
+                      );
+                    }}
+                  >
+                    {choice.preferredTarget}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </section>
       ) : null}
 
@@ -830,13 +1031,18 @@ export function ConfiguredTranslationPage({
         </section>
       ) : null}
       {result?.status === "validation_error" ? (
-        <p role="alert">
-          {result.reason === "invalid_source_text"
-            ? "请输入需要翻译的有效文本。"
-            : result.reason === "source_text_too_long"
-              ? "源文本不能超过 10,000 个 Unicode 码点。"
-              : "翻译请求已失效，请重新发起。"}
-        </p>
+        result.reason === "terminology_conflict" ? null : (
+          <p role="alert">
+            {result.message ??
+              (result.reason === "invalid_source_text"
+                ? "请输入需要翻译的有效文本。"
+                : result.reason === "source_text_too_long"
+                  ? "源文本不能超过 10,000 个 Unicode 码点。"
+                  : result.reason === "invalid_terminology"
+                    ? "术语配置无效，请检查后重新发起。"
+                    : "翻译请求已失效，请重新发起。")}
+          </p>
+        )
       ) : null}
 
       {errorMessage ? <p role="alert">{errorMessage}</p> : null}

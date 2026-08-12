@@ -10,6 +10,12 @@ afterEach(() => {
 describe("getBrowserRuntime", () => {
   it("returns the preload business interface without exposing another API", () => {
     const bridge: RuyiRuntimeBridge = {
+      getTerminologyState: vi.fn(),
+      saveTermbase: vi.fn(),
+      deleteTermbase: vi.fn(),
+      saveDomainProfile: vi.fn(),
+      deleteDomainProfile: vi.fn(),
+      setCurrentDomainProfile: vi.fn(),
       getServiceConfiguration: vi.fn(),
       getServiceConfigurations: vi.fn(),
       saveServiceConfiguration: vi.fn(),

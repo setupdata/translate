@@ -5,6 +5,12 @@ function unavailableRuntime(): RuyiRuntimeBridge {
     Promise.reject(new Error("如意翻译运行时尚未就绪，请在 uTools 中打开插件。"));
 
   return Object.freeze({
+    getTerminologyState: unavailable,
+    saveTermbase: unavailable,
+    deleteTermbase: unavailable,
+    saveDomainProfile: unavailable,
+    deleteDomainProfile: unavailable,
+    setCurrentDomainProfile: unavailable,
     getServiceConfiguration: unavailable,
     getServiceConfigurations: unavailable,
     saveServiceConfiguration: unavailable,

@@ -5,6 +5,7 @@ import type {
   ServiceConfigurationInput,
   ServiceConfigurationsState,
 } from "../runtime/contracts";
+import { TerminologySettingsSection } from "./TerminologySettingsSection";
 
 const OFFICIAL_TRANSLATION_URL = "https://api.deepseek.com/chat/completions";
 const OFFICIAL_MODEL_LIST_URL = "https://api.deepseek.com/models";
@@ -629,6 +630,8 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
         </section>
       )}
 
+      <TerminologySettingsSection runtime={runtime} />
+
       <section
         aria-labelledby="privacy-notice-heading"
         className="configuration-card privacy-notice"
@@ -641,7 +644,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
           API Key 使用 uTools 的 dbCryptoStorage 在本机加密保存，页面不会回填完整密钥，但客户端密钥仍可能被本机高权限程序或调试手段提取。
         </p>
         <p>
-          服务配置名称、地址、协议、模型和模型列表缓存在本地数据库中；API Key，以及今后启用的术语库、行业配置和参考译例，使用加密存储。开启 uTools 数据同步后，这些数据可能形成远端或其他设备副本。
+          服务配置名称、地址、协议、模型和模型列表缓存在本地数据库中；API Key、术语库和行业配置使用加密存储。开启 uTools 数据同步后，这些数据可能形成远端或其他设备副本。
         </p>
         <p>
           可用每项配置的“删除”按钮删除该配置、API Key 和模型列表缓存，也可在编辑配置时单独“删除 API Key”。已同步的副本还需在 uTools 的同步数据管理中处理；删除本地数据不能删除模型服务已经保留的请求内容。

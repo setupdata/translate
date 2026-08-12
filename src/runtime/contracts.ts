@@ -52,6 +52,7 @@ export type StandardTranslationRequest = {
   sourceText: string;
   targetLanguage: TargetLanguage;
   serviceConfigurationId?: string | null;
+  domainProfileId?: string | null;
   additionalRequirements?: string;
   taskTerms?: TaskTerm[];
   confirmationToken?: string;
@@ -60,6 +61,57 @@ export type StandardTranslationRequest = {
 export type TaskTerm = {
   sourceTerm: string;
   preferredTarget: string;
+};
+
+export type TermStrictness = "preferred" | "exact";
+
+export type TermEntry = {
+  id: string | null;
+  sourceTerm: string;
+  preferredTarget: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  allowedVariants: string[];
+  forbiddenTargets: string[];
+  meaning: string | null;
+  strictness: TermStrictness;
+  caseSensitive: boolean;
+  aliases: string[];
+  priority: number;
+};
+
+export type Termbase = {
+  id: string | null;
+  name: string;
+  enabled: boolean;
+  entries: TermEntry[];
+};
+
+export type DomainProfile = {
+  id: string | null;
+  version: string;
+  name: string;
+  field: string | null;
+  documentType: string | null;
+  audience: string | null;
+  style: string | null;
+  termbaseIds: string[];
+  preserveRules: string[];
+};
+
+export type TerminologyState = {
+  termbases: Array<Termbase & { id: string }>;
+  domainProfiles: Array<DomainProfile & { id: string }>;
+  currentDomainProfileId: string | null;
+};
+
+export type TerminologyConflict = {
+  source: string;
+  choices: Array<{
+    termId: string;
+    preferredTarget: string;
+    origin: "task" | "domain" | "general";
+  }>;
 };
 
 export type StableTranslationErrorCode =
@@ -139,7 +191,14 @@ export type StandardTranslationResult =
         | "invalid_source_text"
         | "source_text_too_long"
         | "invalid_target_language"
-        | "invalid_confirmation";
+        | "invalid_confirmation"
+        | "invalid_terminology"
+        | "terminology_conflict"
+        | "terminology_limit_exceeded"
+        | "input_budget_exceeded";
+      field?: string;
+      message?: string;
+      terminologyConflicts?: TerminologyConflict[];
       sourceRetained: true;
     }
   | {
@@ -185,6 +244,7 @@ export type CurrentTranslationInputs = {
   sourceText: string;
   targetLanguage: TargetLanguage;
   serviceConfigurationId: string | null;
+  domainProfileId: string | null;
   qualityMode: "standard";
   additionalRequirements: string;
   taskTerms: TaskTerm[];
@@ -208,6 +268,12 @@ export type CurrentTranslationSnapshot = {
 };
 
 export interface RuyiRuntimeBridge {
+  getTerminologyState(): Promise<TerminologyState>;
+  saveTermbase(input: Termbase): Promise<TerminologyState>;
+  deleteTermbase(termbaseId: string): Promise<TerminologyState>;
+  saveDomainProfile(input: DomainProfile): Promise<TerminologyState>;
+  deleteDomainProfile(domainProfileId: string): Promise<TerminologyState>;
+  setCurrentDomainProfile(domainProfileId: string | null): Promise<TerminologyState>;
   getServiceConfiguration(
     configurationId?: string,
   ): Promise<RuntimeConfigurationState>;

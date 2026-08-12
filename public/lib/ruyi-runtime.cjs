@@ -1,5 +1,6 @@
 const SETTINGS_KEY = "ruyi.settings.v1";
 const API_KEY_PREFIX = "ruyi.secret.api-key.";
+const TERMINOLOGY_KEY = "ruyi.secret.terminology.v1";
 const { randomBytes } = require("crypto");
 const { inspectSourceText } = require("./text-limits.cjs");
 const {
@@ -18,6 +19,13 @@ const {
   uniqueCopyName,
   validateServiceConfiguration,
 } = require("./service-configurations.cjs");
+const {
+  inspectTerminologyQuality,
+  resolveTerminology,
+  validateDomainProfile,
+  validateTermbase,
+  validateTranslationInputBudget,
+} = require("./terminology.cjs");
 
 const CONNECTION_TEST_SOURCE_TEXT = "Connection test";
 const CONNECTION_TEST_MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -206,17 +214,10 @@ function freezeDeep(value) {
 
 function normalizeTaskTerms(taskTerms) {
   if (!Array.isArray(taskTerms)) return [];
-  return taskTerms
-    .filter(
-      (term) =>
-        term &&
-        typeof term.sourceTerm === "string" &&
-        typeof term.preferredTarget === "string",
-    )
-    .map((term) => ({
-      sourceTerm: term.sourceTerm,
-      preferredTarget: term.preferredTarget,
-    }));
+  return taskTerms.map((term) => ({
+    sourceTerm: term && term.sourceTerm,
+    preferredTarget: term && term.preferredTarget,
+  }));
 }
 
 function normalizeCurrentInputs(inputs) {
@@ -228,6 +229,10 @@ function normalizeCurrentInputs(inputs) {
     serviceConfigurationId:
       inputs && typeof inputs.serviceConfigurationId === "string"
         ? inputs.serviceConfigurationId
+        : null,
+    domainProfileId:
+      inputs && typeof inputs.domainProfileId === "string"
+        ? inputs.domainProfileId
         : null,
     qualityMode: "standard",
     additionalRequirements:
@@ -243,6 +248,7 @@ function inputsFingerprint(inputs) {
     inputs.sourceText,
     inputs.targetLanguage,
     inputs.serviceConfigurationId,
+    inputs.domainProfileId,
     inputs.qualityMode,
     inputs.additionalRequirements,
     inputs.taskTerms,
@@ -256,6 +262,7 @@ function createRuyiRuntime({
   servicePreset = DEEPSEEK_FLASH_PRESET,
   tokenFactory = () => randomBytes(24).toString("hex"),
   configurationIdFactory = () => `service-${randomBytes(12).toString("hex")}`,
+  terminologyIdFactory = () => `terminology-${randomBytes(12).toString("hex")}`,
   now = () => new Date(),
   hostActions = {},
 }) {
@@ -291,6 +298,7 @@ function createRuyiRuntime({
                 sourceText: task.sourceText,
                 targetLanguage: task.targetLanguage,
                 serviceConfigurationId: task.serviceConfigurationId,
+                domainProfileId: task.domainProfileId,
                 qualityMode: task.qualityMode,
                 additionalRequirements: task.additionalRequirements,
                 taskTerms: task.taskTerms,
@@ -345,6 +353,7 @@ function createRuyiRuntime({
 
   function beginCurrentTask(request, targetLanguage) {
     const settings = readSettings();
+    const terminologyState = readTerminologyState();
     const inputs = normalizeCurrentInputs({
       sourceText: request.sourceText,
       targetLanguage,
@@ -352,6 +361,12 @@ function createRuyiRuntime({
         typeof request.serviceConfigurationId === "string"
           ? request.serviceConfigurationId
           : settings.currentServiceConfigurationId,
+      domainProfileId:
+        request.domainProfileId === null
+          ? null
+          : typeof request.domainProfileId === "string"
+            ? request.domainProfileId
+            : terminologyState.currentDomainProfileId,
       qualityMode: "standard",
       additionalRequirements:
         typeof request.additionalRequirements === "string"
@@ -414,6 +429,231 @@ function createRuyiRuntime({
     const initial = createInitialSettings(servicePreset);
     plainStorage.setItem(SETTINGS_KEY, initial);
     return initial;
+  }
+
+  function createInitialTerminologyState() {
+    return {
+      version: 1,
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    };
+  }
+
+  function readTerminologyState() {
+    const existing = cryptoStorage.getItem(TERMINOLOGY_KEY);
+    if (
+      existing &&
+      existing.version === 1 &&
+      Array.isArray(existing.termbases) &&
+      Array.isArray(existing.domainProfiles)
+    ) {
+      return existing;
+    }
+    return createInitialTerminologyState();
+  }
+
+  function writeTerminologyState(state) {
+    try {
+      cryptoStorage.setItem(TERMINOLOGY_KEY, state);
+    } catch {
+      throw Object.assign(
+        new Error("uTools 加密存储不可用，术语库和行业配置未保存。"),
+        { code: "terminology_validation_error" },
+      );
+    }
+  }
+
+  function terminologyStateView(state) {
+    return freezeDeep({
+      termbases: state.termbases.map((termbase) => ({
+        ...termbase,
+        entries: termbase.entries.map((entry) => ({ ...entry })),
+      })),
+      domainProfiles: state.domainProfiles.map((domainProfile) => ({
+        ...domainProfile,
+        termbaseIds: [...domainProfile.termbaseIds],
+        preserveRules: [...domainProfile.preserveRules],
+      })),
+      currentDomainProfileId:
+        typeof state.currentDomainProfileId === "string"
+          ? state.currentDomainProfileId
+          : null,
+    });
+  }
+
+  async function getTerminologyState() {
+    return terminologyStateView(readTerminologyState());
+  }
+
+  function markTerminologyChanged() {
+    pendingConfirmations.clear();
+    if (currentTranslation && currentTranslation.task) {
+      publishCurrentTranslation({ ...currentTranslation, stale: true });
+    }
+  }
+
+  async function saveTermbase(input) {
+    const state = readTerminologyState();
+    const existingIndex =
+      input && typeof input.id === "string"
+        ? state.termbases.findIndex((termbase) => termbase.id === input.id)
+        : -1;
+    const normalized = validateTermbase(input, {
+      termbases: state.termbases,
+      idFactory: terminologyIdFactory,
+      entryIdFactory: terminologyIdFactory,
+    });
+    if (existingIndex >= 0) {
+      state.termbases.splice(existingIndex, 1, normalized);
+    } else {
+      state.termbases.push(normalized);
+    }
+    writeTerminologyState(state);
+    markTerminologyChanged();
+    return terminologyStateView(state);
+  }
+
+  async function deleteTermbase(termbaseId) {
+    const state = readTerminologyState();
+    const index = state.termbases.findIndex((termbase) => termbase.id === termbaseId);
+    if (index < 0) {
+      throw Object.assign(new Error("要删除的术语库不存在。"), {
+        code: "terminology_validation_error",
+        field: "termbaseId",
+      });
+    }
+    state.termbases.splice(index, 1);
+    state.domainProfiles = state.domainProfiles.map((domainProfile) => ({
+      ...domainProfile,
+      termbaseIds: domainProfile.termbaseIds.filter((id) => id !== termbaseId),
+    }));
+    writeTerminologyState(state);
+    markTerminologyChanged();
+    return terminologyStateView(state);
+  }
+
+  async function saveDomainProfile(input) {
+    const state = readTerminologyState();
+    const existingIndex =
+      input && typeof input.id === "string"
+        ? state.domainProfiles.findIndex((profile) => profile.id === input.id)
+        : -1;
+    const normalized = validateDomainProfile(input, {
+      domainProfiles: state.domainProfiles,
+      termbases: state.termbases,
+      idFactory: terminologyIdFactory,
+    });
+    if (existingIndex >= 0) {
+      state.domainProfiles.splice(existingIndex, 1, normalized);
+    } else {
+      state.domainProfiles.push(normalized);
+    }
+    writeTerminologyState(state);
+    markTerminologyChanged();
+    return terminologyStateView(state);
+  }
+
+  async function deleteDomainProfile(domainProfileId) {
+    const state = readTerminologyState();
+    const index = state.domainProfiles.findIndex(
+      (domainProfile) => domainProfile.id === domainProfileId,
+    );
+    if (index < 0) {
+      throw Object.assign(new Error("要删除的行业配置不存在。"), {
+        code: "terminology_validation_error",
+        field: "domainProfileId",
+      });
+    }
+    state.domainProfiles.splice(index, 1);
+    if (state.currentDomainProfileId === domainProfileId) {
+      state.currentDomainProfileId = null;
+    }
+    writeTerminologyState(state);
+    pendingConfirmations.clear();
+    if (currentTranslation) {
+      updateCurrentTranslationInputs({
+        ...currentTranslation.inputs,
+        domainProfileId:
+          currentTranslation.inputs.domainProfileId === domainProfileId
+            ? null
+            : currentTranslation.inputs.domainProfileId,
+      });
+    }
+    return terminologyStateView(state);
+  }
+
+  async function setCurrentDomainProfile(domainProfileId) {
+    const state = readTerminologyState();
+    if (
+      domainProfileId !== null &&
+      !state.domainProfiles.some((domainProfile) => domainProfile.id === domainProfileId)
+    ) {
+      throw Object.assign(new Error("要使用的行业配置不存在。"), {
+        code: "terminology_validation_error",
+        field: "domainProfileId",
+      });
+    }
+    state.currentDomainProfileId = domainProfileId;
+    writeTerminologyState(state);
+    pendingConfirmations.clear();
+    if (currentTranslation) {
+      updateCurrentTranslationInputs({
+        ...currentTranslation.inputs,
+        domainProfileId,
+      });
+    }
+    return terminologyStateView(state);
+  }
+
+  function prepareTerminologyInput(request, targetLanguage, submittedInputs) {
+    const terminologyState = readTerminologyState();
+    const selectedDomainProfile = submittedInputs.domainProfileId
+      ? terminologyState.domainProfiles.find(
+          (domainProfile) => domainProfile.id === submittedInputs.domainProfileId,
+        )
+      : null;
+    if (submittedInputs.domainProfileId && !selectedDomainProfile) {
+      throw Object.assign(new Error("选择的行业配置不存在。"), {
+        code: "terminology_validation_error",
+        field: "domainProfileId",
+      });
+    }
+    const terminologyResolution = resolveTerminology({
+      sourceText: request.sourceText,
+      targetLanguage,
+      taskTerms: submittedInputs.taskTerms,
+      termbases: terminologyState.termbases,
+      domainProfile: selectedDomainProfile,
+    });
+    const domainProfile = selectedDomainProfile
+      ? {
+          id: selectedDomainProfile.id,
+          version: selectedDomainProfile.version,
+          name: selectedDomainProfile.name,
+          field: selectedDomainProfile.field,
+          documentType: selectedDomainProfile.documentType,
+          audience: selectedDomainProfile.audience,
+          style: selectedDomainProfile.style,
+          preserveRules: [...selectedDomainProfile.preserveRules],
+        }
+      : null;
+    const input = {
+      schemaVersion: "translation-input.v1",
+      taskId: request.taskId,
+      targetLanguage,
+      domainProfile,
+      matchedTerms: terminologyResolution.matchedTerms,
+      referenceTranslations: [],
+      additionalRequirements: submittedInputs.additionalRequirements,
+      protectedItems: extractProtectedItems(request.sourceText),
+      qualityMode: "standard",
+      mode: "full_document",
+      analysis: null,
+      sourceText: request.sourceText,
+    };
+    validateTranslationInputBudget({ input });
+    return { input, terminologyResolution };
   }
 
   function configurationsIn(settings) {
@@ -930,7 +1170,55 @@ function createRuyiRuntime({
       };
     }
 
+    if (request.taskTerms !== undefined && !Array.isArray(request.taskTerms)) {
+      return {
+        status: "validation_error",
+        reason: "invalid_terminology",
+        field: "taskTerms",
+        message: "本次术语必须是数组。",
+        sourceRetained: true,
+      };
+    }
+
     const { inputs: submittedInputs } = beginCurrentTask(request, targetLanguage);
+
+    let terminologyPreparation;
+    try {
+      terminologyPreparation = prepareTerminologyInput(
+        request,
+        targetLanguage,
+        submittedInputs,
+      );
+    } catch (error) {
+      const result = {
+        status: "validation_error",
+        reason:
+          error && error.code === "terminology_limit_exceeded"
+            ? "terminology_limit_exceeded"
+            : error && error.code === "input_budget_exceeded"
+              ? "input_budget_exceeded"
+              : "invalid_terminology",
+        ...(error && error.field ? { field: error.field } : {}),
+        message:
+          error && typeof error.message === "string"
+            ? error.message
+            : "术语配置无效。",
+        sourceRetained: true,
+      };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
+    }
+    if (terminologyPreparation.terminologyResolution.conflicts.length > 0) {
+      const result = {
+        status: "validation_error",
+        reason: "terminology_conflict",
+        sourceRetained: true,
+        terminologyConflicts: terminologyPreparation.terminologyResolution.conflicts,
+      };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
+    }
+    const { input, terminologyResolution } = terminologyPreparation;
 
     preparingTaskIds.add(request.taskId);
     let state;
@@ -1056,6 +1344,7 @@ function createRuyiRuntime({
             dataSent: [
               "源文本",
               "目标语言",
+              ...(input.domainProfile ? ["行业配置"] : []),
               "命中的术语",
               "参考译例",
               "附加翻译要求",
@@ -1073,20 +1362,6 @@ function createRuyiRuntime({
     }
 
     const apiKey = apiKeyFor(configuration.id);
-    const input = {
-      schemaVersion: "translation-input.v1",
-      taskId: request.taskId,
-      targetLanguage,
-      domainProfile: null,
-      matchedTerms: [],
-      referenceTranslations: [],
-      additionalRequirements: submittedInputs.additionalRequirements,
-      protectedItems: extractProtectedItems(request.sourceText),
-      qualityMode: "standard",
-      mode: "full_document",
-      analysis: null,
-      sourceText: request.sourceText,
-    };
     if (activeTask) {
       activeTask.controller.abort();
     }
@@ -1125,9 +1400,34 @@ function createRuyiRuntime({
           });
         },
       });
-    } catch {
+      validateTranslationInputBudget({
+        input,
+        serializedBody: protocolOperation.body,
+      });
+    } catch (error) {
       if (activeTask === task) {
         activeTask = null;
+      }
+      if (
+        error &&
+        [
+          "input_budget_exceeded",
+          "terminology_limit_exceeded",
+          "terminology_validation_error",
+        ].includes(error.code)
+      ) {
+        const result = {
+          status: "validation_error",
+          reason:
+            error.code === "terminology_validation_error"
+              ? "invalid_terminology"
+              : error.code,
+          ...(error.field ? { field: error.field } : {}),
+          message: error.message,
+          sourceRetained: true,
+        };
+        storeCurrentResult(request.taskId, result, "failed");
+        return result;
       }
       const result = {
         status: "failed",
@@ -1199,11 +1499,22 @@ function createRuyiRuntime({
         translation,
         streamCompleted: true,
       });
+      const terminologyRisks = inspectTerminologyQuality({
+        translation,
+        matchedTerms: terminologyResolution.qualityTerms,
+      });
+      const terminologyPasteBlocked = terminologyRisks.some(
+        (risk) => risk.certainty === "deterministic" && risk.severity === "critical",
+      );
+      const combinedQuality = freezeDeep({
+        risks: [...quality.risks, ...terminologyRisks],
+        pasteBlocked: quality.pasteBlocked || terminologyPasteBlocked,
+      });
       currentCopyCandidate = {
         taskId: request.taskId,
         sourceText: request.sourceText,
         translation,
-        pasteBlocked: quality.pasteBlocked,
+        pasteBlocked: combinedQuality.pasteBlocked,
       };
       emitProgress({
         type: "finished",
@@ -1214,7 +1525,7 @@ function createRuyiRuntime({
         status: "completed",
         taskId: request.taskId,
         translation,
-        quality,
+        quality: combinedQuality,
       });
       storeCurrentResult(
         request.taskId,
@@ -1371,6 +1682,12 @@ function createRuyiRuntime({
   }
 
   return Object.freeze({
+    getTerminologyState,
+    saveTermbase,
+    deleteTermbase,
+    saveDomainProfile,
+    deleteDomainProfile,
+    setCurrentDomainProfile,
     getServiceConfiguration,
     getServiceConfigurations,
     saveServiceConfiguration,

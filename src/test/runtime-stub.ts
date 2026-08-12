@@ -35,6 +35,36 @@ export function createRuntimeStub(
   overrides: Partial<RuyiRuntimeBridge> = {},
 ): RuyiRuntimeBridge {
   return {
+    getTerminologyState: async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    }),
+    saveTermbase: async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    }),
+    deleteTermbase: async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    }),
+    saveDomainProfile: async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    }),
+    deleteDomainProfile: async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    }),
+    setCurrentDomainProfile: async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    }),
     getServiceConfiguration: async () => configuredRuntimeState,
     getServiceConfigurations: async () => ({
       currentServiceConfigurationId: "deepseek-flash",

@@ -15,6 +15,7 @@ const requiredFiles = [
   "lib/responses-parser.cjs",
   "lib/ruyi-runtime.cjs",
   "lib/service-configurations.cjs",
+  "lib/terminology.cjs",
   "lib/text-limits.cjs",
   "lib/translation-protocol.cjs",
 ];

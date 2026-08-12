@@ -46,12 +46,48 @@ function currentTranslationMethods(staleOnUpdate = false): Pick<
   | "testServiceConnection"
   | "fetchServiceModels"
   | "cancelServiceOperation"
+  | "getTerminologyState"
+  | "saveTermbase"
+  | "deleteTermbase"
+  | "saveDomainProfile"
+  | "deleteDomainProfile"
+  | "setCurrentDomainProfile"
 > {
   const configurationsState = () => ({
     currentServiceConfigurationId: missingKeyService.id,
     serviceConfigurations: [missingKeyService],
   });
   return {
+    getTerminologyState: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    })),
+    saveTermbase: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    })),
+    deleteTermbase: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    })),
+    saveDomainProfile: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    })),
+    deleteDomainProfile: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    })),
+    setCurrentDomainProfile: vi.fn(async () => ({
+      termbases: [],
+      domainProfiles: [],
+      currentDomainProfileId: null,
+    })),
     getCurrentTranslation: () => null,
     updateCurrentTranslationInputs: (inputs: CurrentTranslationInputs) =>
       ({
@@ -865,6 +901,7 @@ describe("ConfiguredTranslationPage", () => {
           modelLabel: "English",
         },
         serviceConfigurationId: "deepseek-flash",
+        domainProfileId: null,
         qualityMode: "standard",
         additionalRequirements: "Keep headings short.",
         taskTerms: [],
@@ -879,6 +916,7 @@ describe("ConfiguredTranslationPage", () => {
           modelLabel: "English",
         },
         serviceConfigurationId: "deepseek-flash",
+        domainProfileId: null,
         qualityMode: "standard",
         additionalRequirements: "Keep headings short.",
         taskTerms: [],
@@ -928,6 +966,7 @@ describe("ConfiguredTranslationPage", () => {
         sourceText: "old source",
         targetLanguage: missingKeyState.defaults.targetLanguage,
         serviceConfigurationId: "deepseek-flash",
+        domainProfileId: null,
         qualityMode: "standard",
         additionalRequirements: "",
         taskTerms: [],
@@ -937,6 +976,7 @@ describe("ConfiguredTranslationPage", () => {
         sourceText: "old source",
         targetLanguage: missingKeyState.defaults.targetLanguage,
         serviceConfigurationId: "deepseek-flash",
+        domainProfileId: null,
         qualityMode: "standard",
         additionalRequirements: "",
         taskTerms: [],
@@ -984,6 +1024,7 @@ describe("ConfiguredTranslationPage", () => {
       sourceText: "old source",
       targetLanguage: missingKeyState.defaults.targetLanguage,
       serviceConfigurationId: "deepseek-flash",
+      domainProfileId: null,
       qualityMode: "standard",
       additionalRequirements: "",
       taskTerms: [],
