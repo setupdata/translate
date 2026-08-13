@@ -9,3 +9,20 @@
 完整语料规模、人工评价、性能统计和门槛定义以 [`docs/quality/ruyi-translate-v1-evaluation.md`](../docs/quality/ruyi-translate-v1-evaluation.md) 为准。真实请求只能由开发者在受控环境中手动执行，任何 `pass` 结论都必须由可审计证据支持。
 
 证据清单使用 `evaluation-evidence-manifest.v1`，每个证据文件使用一行一个 `evaluation-evidence-record.v1` 对象。清单固定包含自动检查、模型输出、配对条件、人工评审、修订、并发、性能以及 Windows、macOS、Linux 三份平台记录，并绑定候选 commit、报告、用例文件、构建输入清单、记录文件和原始附件的 SHA-256。模型、配对、并发和性能记录必须带可重新计算的请求指纹条件；人工评审要绑定具体模型输出，独立评审标签、一致率、Cohen's kappa 和裁决结果由检查器重算；性能与并发样本的条件、时段和序号必须唯一。证据记录不得内嵌源文、译文、术语、参考译例、密钥或未经清理的错误对象；确需保留的受控原始资料只放在未提交的附件中。UPXS 是 uTools 生成的专有签名包，仓库检查器不会自行解析或伪造其签名；签名是否被 uTools 接受，以三个平台的实际安装记录为准。检查器能核实文件字节、构建输入和记录之间的一致性，不能替代测试人对实机观察真实性的负责。
+
+已有完整记录和原始附件后，可用 `npm run generate:evaluation-evidence -- --cases <JSONL> --report <JSON> --input <受控暂存目录> --out <新证据目录> --evidence-id <ID> --build-input-sha256 <SHA-256>` 生成证据清单。暂存目录必须在项目外，或位于 Git 忽略的 `evaluation/evidence/` 下；输出目录必须尚不存在。暂存目录固定包含 `artifacts/<分区名>.jsonl`、`attachments.json` 和附件文件。`attachments.json` 的格式如下：
+
+```json
+{
+  "schemaVersion": "evaluation-evidence-attachments.v1",
+  "attachments": [
+    {
+      "attachmentId": "model-output-001",
+      "path": "attachments/model-output-001.json",
+      "kind": "model-output"
+    }
+  ]
+}
+```
+
+命令从文件字节重新计算附件、记录分区、报告和用例的哈希，调用同一个完整证据检查器，全部通过后才原子写入新目录。它不发起网络请求，不生成模型输出，不修改记录中的状态或结论，也不会为缺少的人工评审、性能样本、平台记录或 UPXS 自动补空数据。记录不完整、附件不匹配或报告仍未声明所需样本时，命令直接失败且不留下“通过”的清单。包含 `authorized-private` 数据时还须显式添加 `--allow-authorized-private`；原始附件和生成目录都不得提交。

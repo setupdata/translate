@@ -51,6 +51,9 @@ describe("evaluation command", () => {
     expect(packageJson.scripts["prepare:release-upxs"]).toBe(
       "node scripts/prepare-release-upxs.mjs",
     );
+    expect(packageJson.scripts["generate:evaluation-evidence"]).toBe(
+      "node scripts/generate-evaluation-evidence.mjs",
+    );
     expect(packageJson.scripts.test).toContain("npm run check:evaluation");
     expect(packageJson.scripts.build).toContain("npm run check:evaluation");
   });

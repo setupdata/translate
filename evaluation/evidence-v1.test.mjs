@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -20,6 +20,14 @@ import {
 } from "./lib/evidence-v1.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
+const gitRevision = spawnSync("git", ["rev-parse", "HEAD"], {
+  cwd: projectRoot,
+  encoding: "utf8",
+});
+if (gitRevision.status !== 0 || !/^[a-f\d]{40}$/u.test(gitRevision.stdout.trim())) {
+  throw new Error("测试无法确认当前 Git commit。");
+}
+const candidateCommitSha = gitRevision.stdout.trim();
 
 function sha256(source) {
   return createHash("sha256").update(source).digest("hex");
@@ -63,7 +71,7 @@ function evidenceRecords(evidenceType, count, payload = {}, idPrefix = evidenceT
       datasetVersion: "dataset-v1",
       recordedAt: "2026-08-13T12:00:00.000Z",
       subjectId: `${idPrefix}-subject-${index}`,
-      commitSha: "a".repeat(40),
+      commitSha: candidateCommitSha,
       attachmentId,
       payload: typeof payload === "function" ? payload(index, attachmentSha256) : payload,
     });
@@ -95,7 +103,7 @@ function automaticPayload(index, attachmentSha256) {
   return {
     checkId: automaticCheckIds[index],
     status: "pass",
-    commitSha: "a".repeat(40),
+    commitSha: candidateCommitSha,
     command: "npm test",
     resultHash: attachmentSha256,
   };
@@ -129,7 +137,7 @@ function fingerprintCondition(caseId = "energy-en-zh-0001") {
     providerType: "custom",
     serviceConfigurationId: "custom-1",
     normalizedTranslationUrl: "https://api.example.test/v1/chat/completions",
-    adapterBuildVersion: "a".repeat(40),
+    adapterBuildVersion: candidateCommitSha,
     protocol: "chat-completions",
     model: "model-v1",
     reportedModelVersion: "2026-08-13",
@@ -407,7 +415,7 @@ function evidenceFixture(report, casesSource, cases) {
       evidenceId: "evidence-v1-test",
       candidateVersion: report.candidateVersion,
       datasetVersion: report.datasetVersion,
-      commitSha: "a".repeat(40),
+      commitSha: candidateCommitSha,
       reportSha256: hashCanonicalValue(report),
       casesSha256: sha256(casesSource),
       buildInputSha256: "e".repeat(64),
@@ -418,6 +426,59 @@ function evidenceFixture(report, casesSource, cases) {
     artifactSources,
     attachmentSources,
   };
+}
+
+async function writeGeneratorInput(inputDirectory, fixture) {
+  await mkdir(resolve(inputDirectory, "artifacts"), { recursive: true });
+  await writeFile(
+    resolve(inputDirectory, "attachments.json"),
+    JSON.stringify({
+      schemaVersion: "evaluation-evidence-attachments.v1",
+      attachments: fixture.manifest.attachments.map(({ attachmentId, path, kind }) => ({
+        attachmentId,
+        path,
+        kind,
+      })),
+    }),
+    "utf8",
+  );
+  for (const [artifactPath, source] of Object.entries(fixture.artifactSources)) {
+    await writeFile(resolve(inputDirectory, "artifacts", artifactPath), source, "utf8");
+  }
+  for (const [attachmentPath, source] of Object.entries(fixture.attachmentSources)) {
+    const absolutePath = resolve(inputDirectory, attachmentPath);
+    await mkdir(resolve(absolutePath, ".."), { recursive: true });
+    await writeFile(absolutePath, source);
+  }
+}
+
+function runEvidenceGenerator({
+  casesPath,
+  reportPath,
+  inputDirectory,
+  outputDirectory,
+  allowAuthorizedPrivate = false,
+}) {
+  return spawnSync(
+    process.execPath,
+    [
+      resolve(projectRoot, "scripts/generate-evaluation-evidence.mjs"),
+      "--cases",
+      casesPath,
+      "--report",
+      reportPath,
+      "--input",
+      inputDirectory,
+      "--out",
+      outputDirectory,
+      "--evidence-id",
+      "generated-evidence-v1-test",
+      "--build-input-sha256",
+      "e".repeat(64),
+      ...(allowAuthorizedPrivate ? ["--allow-authorized-private"] : []),
+    ],
+    { cwd: projectRoot, encoding: "utf8" },
+  );
 }
 
 describe("evaluation evidence manifest", () => {
@@ -529,7 +590,7 @@ describe("evaluation evidence manifest", () => {
         kind: "custom",
         serviceConfigurationId: "custom-1",
         normalizedTranslationUrl: "https://api.example.test/v1/chat/completions",
-        adapterBuildVersion: "a".repeat(40),
+        adapterBuildVersion: candidateCommitSha,
         model: "model-v1",
         reportedModelVersion: "2026-08-13",
         protocol: "chat-completions",
@@ -571,7 +632,7 @@ describe("evaluation evidence manifest", () => {
         kind: "custom",
         serviceConfigurationId: "custom-1",
         normalizedTranslationUrl: "https://api.example.test/v1/chat/completions",
-        adapterBuildVersion: "a".repeat(40),
+        adapterBuildVersion: candidateCommitSha,
         model: "model-v1",
         reportedModelVersion: "2026-08-13",
         protocol: "chat-completions",
@@ -648,6 +709,221 @@ describe("evaluation evidence manifest", () => {
       expect(result.stdout).toContain("不可发布");
       expect(result.stdout).not.toContain("evidence.missing");
       expect(`${result.stdout}${result.stderr}`).not.toContain("{plantId}");
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("generates a verified evidence bundle from controlled records and attachments", async () => {
+    const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "ruyi-evidence-generator-"));
+    const inputDirectory = resolve(temporaryDirectory, "input");
+    const outputDirectory = resolve(temporaryDirectory, "output");
+    const casesSource = await readFile(
+      resolve(projectRoot, "evaluation/cases/synthetic-smoke.jsonl"),
+      "utf8",
+    );
+    const cases = parseEvaluationCases(casesSource);
+    const report = reportFor(cases);
+    const fixture = evidenceFixture(report, casesSource, cases);
+    const casesPath = resolve(temporaryDirectory, "cases.jsonl");
+    const reportPath = resolve(temporaryDirectory, "report.json");
+
+    await writeFile(casesPath, casesSource, "utf8");
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    await writeGeneratorInput(inputDirectory, fixture);
+
+    try {
+      const generation = runEvidenceGenerator({
+        casesPath,
+        reportPath,
+        inputDirectory,
+        outputDirectory,
+      });
+      expect(generation.status, `${generation.stdout}\n${generation.stderr}`).toBe(0);
+      expect(generation.stdout).toContain("证据包已生成并通过完整性校验");
+
+      const manifestPath = resolve(outputDirectory, "manifest.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      expect(manifest).toMatchObject({
+        schemaVersion: "evaluation-evidence-manifest.v1",
+        evidenceId: "generated-evidence-v1-test",
+        candidateVersion: "0.1.0",
+        datasetVersion: "dataset-v1",
+        commitSha: candidateCommitSha,
+        buildInputSha256: "e".repeat(64),
+        caseCount: 1,
+      });
+      expect(manifest.artifacts.automaticChecks.path).toBe("artifacts/automaticChecks.jsonl");
+      expect(manifest.attachments).toHaveLength(fixture.manifest.attachments.length);
+
+      const validation = spawnSync(
+        process.execPath,
+        [
+          resolve(projectRoot, "scripts/check-evaluation.mjs"),
+          "--cases",
+          casesPath,
+          "--report",
+          reportPath,
+          "--evidence",
+          manifestPath,
+        ],
+        { cwd: projectRoot, encoding: "utf8" },
+      );
+      expect(validation.status, `${validation.stdout}\n${validation.stderr}`).toBe(0);
+      expect(validation.stdout).toContain("不可发布");
+      expect(validation.stdout).not.toContain("evidence.missing");
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps authorized-private cases out of repository paths even with explicit consent", async () => {
+    const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "ruyi-private-evidence-"));
+    const repositoryCasesPath = resolve(
+      projectRoot,
+      "evaluation/private-generator-should-not-be-committed.jsonl",
+    );
+    const inputDirectory = resolve(temporaryDirectory, "input");
+    const outputDirectory = resolve(temporaryDirectory, "output");
+    const sharedCasesSource = await readFile(
+      resolve(projectRoot, "evaluation/cases/synthetic-smoke.jsonl"),
+      "utf8",
+    );
+    const casesSource = sharedCasesSource.replace(
+      '"privacyClass":"synthetic"',
+      '"privacyClass":"authorized-private"',
+    );
+    const cases = parseEvaluationCases(casesSource);
+    const report = reportFor(cases);
+    const fixture = evidenceFixture(report, casesSource, cases);
+    const reportPath = resolve(temporaryDirectory, "report.json");
+
+    await writeFile(repositoryCasesPath, casesSource, "utf8");
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    await writeGeneratorInput(inputDirectory, fixture);
+
+    try {
+      const generation = runEvidenceGenerator({
+        casesPath: repositoryCasesPath,
+        reportPath,
+        inputDirectory,
+        outputDirectory,
+        allowAuthorizedPrivate: true,
+      });
+      expect(generation.status).toBe(1);
+      expect(generation.stderr).toContain("Git 忽略的受控私有目录");
+      await expect(stat(outputDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+      await rm(repositoryCasesPath, { force: true });
+    }
+  });
+
+  it("does not write the generated bundle inside its raw evidence input", async () => {
+    const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "ruyi-overlap-evidence-"));
+    const inputDirectory = resolve(temporaryDirectory, "input");
+    const outputDirectory = resolve(inputDirectory, "generated");
+    const casesSource = await readFile(
+      resolve(projectRoot, "evaluation/cases/synthetic-smoke.jsonl"),
+      "utf8",
+    );
+    const cases = parseEvaluationCases(casesSource);
+    const report = reportFor(cases);
+    const fixture = evidenceFixture(report, casesSource, cases);
+    const casesPath = resolve(temporaryDirectory, "cases.jsonl");
+    const reportPath = resolve(temporaryDirectory, "report.json");
+
+    await writeFile(casesPath, casesSource, "utf8");
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    await writeGeneratorInput(inputDirectory, fixture);
+
+    try {
+      const generation = runEvidenceGenerator({
+        casesPath,
+        reportPath,
+        inputDirectory,
+        outputDirectory,
+      });
+      expect(generation.status).toBe(1);
+      expect(generation.stderr).toContain("输入目录和输出目录不能互相包含");
+      await expect(stat(outputDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose a generated manifest when record validation fails", async () => {
+    const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "ruyi-invalid-evidence-"));
+    const inputDirectory = resolve(temporaryDirectory, "input");
+    const outputDirectory = resolve(temporaryDirectory, "output");
+    const casesSource = await readFile(
+      resolve(projectRoot, "evaluation/cases/synthetic-smoke.jsonl"),
+      "utf8",
+    );
+    const cases = parseEvaluationCases(casesSource);
+    const report = reportFor(cases);
+    const fixture = evidenceFixture(report, casesSource, cases);
+    const casesPath = resolve(temporaryDirectory, "cases.jsonl");
+    const reportPath = resolve(temporaryDirectory, "report.json");
+
+    await writeFile(casesPath, casesSource, "utf8");
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    await writeGeneratorInput(inputDirectory, fixture);
+    await writeFile(
+      resolve(inputDirectory, "artifacts", "automaticChecks.jsonl"),
+      "{not-json}\n",
+      "utf8",
+    );
+
+    try {
+      const generation = runEvidenceGenerator({
+        casesPath,
+        reportPath,
+        inputDirectory,
+        outputDirectory,
+      });
+      expect(generation.status).toBe(1);
+      expect(generation.stderr).toContain("不是有效 JSON");
+      expect(`${generation.stdout}${generation.stderr}`).not.toContain("{plantId}");
+      await expect(stat(outputDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects raw files that are not declared as evidence attachments", async () => {
+    const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "ruyi-extra-evidence-"));
+    const inputDirectory = resolve(temporaryDirectory, "input");
+    const outputDirectory = resolve(temporaryDirectory, "output");
+    const casesSource = await readFile(
+      resolve(projectRoot, "evaluation/cases/synthetic-smoke.jsonl"),
+      "utf8",
+    );
+    const cases = parseEvaluationCases(casesSource);
+    const report = reportFor(cases);
+    const fixture = evidenceFixture(report, casesSource, cases);
+    const casesPath = resolve(temporaryDirectory, "cases.jsonl");
+    const reportPath = resolve(temporaryDirectory, "report.json");
+
+    await writeFile(casesPath, casesSource, "utf8");
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    await writeGeneratorInput(inputDirectory, fixture);
+    await writeFile(resolve(inputDirectory, "unlisted-private-output.txt"), "PRIVATE-MARKER", "utf8");
+
+    try {
+      const generation = runEvidenceGenerator({
+        casesPath,
+        reportPath,
+        inputDirectory,
+        outputDirectory,
+      });
+      expect(generation.status).toBe(1);
+      expect(generation.stderr).toContain("附件索引之外的文件");
+      expect(`${generation.stdout}${generation.stderr}`).not.toContain("PRIVATE-MARKER");
+      expect(await readFile(resolve(inputDirectory, "unlisted-private-output.txt"), "utf8")).toBe(
+        "PRIVATE-MARKER",
+      );
+      await expect(stat(outputDirectory)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
