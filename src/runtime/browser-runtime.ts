@@ -27,15 +27,26 @@ function unavailableRuntime(): RuyiRuntimeBridge {
     saveServiceApiKey: unavailable,
     deleteServiceApiKey: unavailable,
     clearServicePerformanceData: unavailable,
+    setServiceThinkingMode: unavailable,
     getParallelAccelerationAdvice: () => ({
       suggested: false,
       estimatedSeconds: null,
       reason: null,
     }),
+    getTranslationCallPlan: ({ qualityMode = "standard" } = {}) => ({
+      qualityMode: qualityMode === "precision" ? "precision" as const : "standard" as const,
+      translationCalls: 1,
+      maximumCallCount: qualityMode === "precision" ? 5 : 1,
+      segmentCount: 1,
+      ...(qualityMode === "precision"
+        ? { analysisCalls: 1, reviewCalls: 2, maximumRevisionCalls: 1 }
+        : {}),
+    }),
     testServiceConnection: unavailable,
     fetchServiceModels: unavailable,
     cancelServiceOperation: () => undefined,
     saveApiKey: unavailable,
+    startTranslation: unavailable,
     startStandardTranslation: unavailable,
     cancelTranslation: () => undefined,
     copyTranslation: () => ({ status: "unavailable" as const }),

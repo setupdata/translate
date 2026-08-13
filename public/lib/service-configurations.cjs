@@ -16,6 +16,7 @@ const DEEPSEEK_FLASH_PRESET = Object.freeze({
   cachedModels: [],
   modelsFetchedAt: null,
   performanceSamples: [],
+  thinkingEnabled: false,
 });
 
 function configurationError(field, message, code = "configuration_error") {
@@ -178,8 +179,15 @@ function validateServiceConfiguration(
       performanceCompatible && Array.isArray(existing.performanceSamples)
         ? existing.performanceSamples.map((sample) => ({ ...sample }))
         : [],
+    thinkingEnabled:
+      type === "deepseek-official" && existing
+        ? Boolean(existing.thinkingEnabled)
+        : false,
     ...(translationUrlUnchanged && existing.confirmedTranslationUrl
       ? { confirmedTranslationUrl: existing.confirmedTranslationUrl }
+      : {}),
+    ...(translationUrlUnchanged && existing.confirmedPrecisionTranslationUrl
+      ? { confirmedPrecisionTranslationUrl: existing.confirmedPrecisionTranslationUrl }
       : {}),
   };
 }
@@ -233,6 +241,9 @@ function serviceConfigurationView(configuration, apiKey) {
         ? configuration.modelsFetchedAt
         : null,
     performanceSummary: performanceSummary(configuration),
+    ...(configuration.type === "deepseek-official" && configuration.thinkingEnabled
+      ? { thinkingEnabled: true }
+      : {}),
   };
 }
 

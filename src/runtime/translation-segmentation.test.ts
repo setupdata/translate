@@ -241,6 +241,41 @@ describe("translation segment scheduling", () => {
     expect(signals.every((signal) => signal.aborted)).toBe(true);
   });
 
+  it("preserves partial results reported by every in-flight worker when one segment fails", async () => {
+    const segments = Array.from({ length: 2 }, (_, ordinal) => ({
+      id: `s-${ordinal}`,
+      ordinal,
+      sourceStart: ordinal,
+      sourceEnd: ordinal + 1,
+    }));
+    const translate = vi.fn(
+      (segment, { signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          const error = Object.assign(new Error(segment.ordinal === 0 ? "failed" : "cancelled"), {
+            code: segment.ordinal === 0 ? "protocol_error" : "cancelled",
+            partialSegmentResult: { ...segment, translation: String(segment.ordinal) },
+          });
+          if (segment.ordinal === 0) {
+            queueMicrotask(() => reject(error));
+          } else {
+            signal.addEventListener("abort", () => reject(error), { once: true });
+          }
+        }),
+    );
+
+    const error = await runSegmentPool({ segments, concurrency: 2, translate }).catch(
+      (caught: unknown) => caught as { code: string; partialSegmentResults: unknown[] },
+    );
+
+    expect(error).toMatchObject({ code: "protocol_error" });
+    expect(error.partialSegmentResults).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "s-0", translation: "0" }),
+        expect.objectContaining({ id: "s-1", translation: "1" }),
+      ]),
+    );
+  });
+
   it("validates concurrency and computes the documented suggestion threshold", async () => {
     await expect(runSegmentPool({ segments: [], concurrency: 0, translate: vi.fn() }))
       .rejects.toMatchObject({ code: "invalid_parallel_configuration" });

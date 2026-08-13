@@ -318,7 +318,7 @@ describe("Responses translation adapter", () => {
     await runtime.saveApiKey(credentialForm(credential));
 
     const result = await runtime.startStandardTranslation(
-      translationRequest(`responses-${_name}`),
+      translationRequest(`responses-${_name.replace(/[^A-Za-z0-9._:-]/gu, "-")}`),
     );
 
     expect(result).toMatchObject({

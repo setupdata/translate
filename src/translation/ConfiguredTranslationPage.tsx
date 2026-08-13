@@ -11,6 +11,7 @@ import type {
   TaskTerm,
   TargetLanguage,
   TerminologyState,
+  TranslationQualityMode,
 } from "../runtime/contracts";
 
 type ConfiguredTranslationPageProps = {
@@ -30,6 +31,8 @@ type StartTranslationOptions = {
   referenceTranslationIds: string[] | null;
   parallelAcceleration: boolean;
   parallelConcurrency: number;
+  qualityMode: TranslationQualityMode;
+  thinkingEnabled: boolean;
 };
 
 function createTaskId(): string {
@@ -49,6 +52,37 @@ const TARGET_LANGUAGES: Array<TargetLanguage & { displayName: string }> = [
 
 const INITIAL_TARGET_LANGUAGE = TARGET_LANGUAGES[0];
 
+const PRECISION_STAGE_LABELS = {
+  preparing: "准备",
+  analysis: "分析",
+  translation: "翻译",
+  accuracy_review: "准确性审校",
+  language_review: "语言审校",
+  reviews: "审校",
+  revision: "修订",
+} as const;
+
+const PRECISION_ISSUE_LABELS: Record<string, string> = {
+  mistranslation: "误译",
+  omission: "漏译",
+  addition: "多译",
+  number: "数字",
+  date: "日期",
+  unit: "单位",
+  proper_name: "专有名称",
+  terminology: "术语",
+  target_language: "目标语言",
+  protected_content: "受保护内容",
+  instruction_injection: "指令注入",
+  grammar: "语法",
+  fluency: "流畅度",
+  tone: "语气",
+  style: "风格",
+  consistency: "一致性",
+  terminology_form: "术语词形",
+  other: "其他",
+};
+
 function buildCurrentInputs(
   sourceText: string,
   targetLanguage: TargetLanguage,
@@ -59,13 +93,16 @@ function buildCurrentInputs(
   referenceTranslationIds: string[] | null,
   parallelAcceleration = false,
   parallelConcurrency = 3,
+  qualityMode: TranslationQualityMode = "standard",
+  thinkingEnabled = false,
 ): CurrentTranslationInputs {
   return {
     sourceText,
     targetLanguage,
     serviceConfigurationId,
     domainProfileId,
-    qualityMode: "standard",
+    qualityMode,
+    thinkingEnabled,
     additionalRequirements,
     taskTerms,
     referenceTranslationIds,
@@ -100,6 +137,13 @@ export function ConfiguredTranslationPage({
   const [isTranslating, setIsTranslating] = useState(false);
   const [parallelAcceleration, setParallelAcceleration] = useState(false);
   const [parallelConcurrency, setParallelConcurrency] = useState(3);
+  const [qualityMode, setQualityMode] =
+    useState<TranslationQualityMode>("standard");
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [isSwitchingService, setIsSwitchingService] = useState(false);
+  const [precisionStage, setPrecisionStage] = useState<
+    "preparing" | "analyzing" | "translating" | "reviewing" | "revising" | null
+  >(null);
   const [parallelProgress, setParallelProgress] =
     useState<ParallelTranslationProgress | null>(null);
   const [confirmRiskCopy, setConfirmRiskCopy] = useState(false);
@@ -109,6 +153,8 @@ export function ConfiguredTranslationPage({
   const requestGeneration = useRef(0);
   const deferredActionGeneration = useRef(0);
   const serviceSelectionGeneration = useRef(0);
+  const domainSelectionGeneration = useRef(0);
+  const thinkingUpdateGeneration = useRef(0);
   const hasAutoStarted = useRef(false);
   const mounted = useRef(true);
   const riskCopyTrigger = useRef<HTMLButtonElement | null>(null);
@@ -132,13 +178,20 @@ export function ConfiguredTranslationPage({
         setParallelAcceleration(false);
         setParallelConcurrency(3);
         setParallelProgress(null);
+        setQualityMode("standard");
+        setThinkingEnabled(false);
+        setPrecisionStage(null);
         setConfirmRiskCopy(false);
         setHostActionMessage("");
         setSnapshotStale(false);
         return;
       }
       setSourceText(snapshot.inputs.sourceText);
-      setTargetLanguage(snapshot.inputs.targetLanguage);
+      setTargetLanguage(
+        TARGET_LANGUAGES.find(
+          (language) => language.id === snapshot.inputs.targetLanguage.id,
+        ) ?? snapshot.inputs.targetLanguage,
+      );
       setAdditionalRequirements(snapshot.inputs.additionalRequirements);
       setTaskTerms(snapshot.inputs.taskTerms);
       setReferenceTranslationIds(snapshot.inputs.referenceTranslationIds);
@@ -150,10 +203,28 @@ export function ConfiguredTranslationPage({
           : [],
       );
       setPartialTranslation(snapshot.partialTranslation);
-      setIsTranslating(snapshot.phase === "translating");
+      setIsTranslating(
+        ["preparing", "analyzing", "translating", "reviewing", "revising"].includes(
+          snapshot.phase,
+        ),
+      );
       setParallelAcceleration(snapshot.inputs.parallelAcceleration);
       setParallelConcurrency(snapshot.inputs.parallelConcurrency);
       setParallelProgress(snapshot.parallelProgress);
+      setQualityMode(snapshot.inputs.qualityMode);
+      setThinkingEnabled(Boolean(snapshot.inputs.thinkingEnabled));
+      setPrecisionStage(
+        ["preparing", "analyzing", "translating", "reviewing", "revising"].includes(
+          snapshot.phase,
+        )
+          ? (snapshot.phase as
+              | "preparing"
+              | "analyzing"
+              | "translating"
+              | "reviewing"
+              | "revising")
+          : null,
+      );
       setSnapshotStale(snapshot.stale);
       if (snapshot.task) {
         taskId.current = snapshot.task.taskId;
@@ -173,6 +244,8 @@ export function ConfiguredTranslationPage({
       selectedReferenceTranslationIds = referenceTranslationIds,
       selectedParallelAcceleration = parallelAcceleration,
       selectedParallelConcurrency = parallelConcurrency,
+      selectedQualityMode = qualityMode,
+      selectedThinkingEnabled = thinkingEnabled,
     ): CurrentTranslationInputs =>
       buildCurrentInputs(
         source,
@@ -184,6 +257,8 @@ export function ConfiguredTranslationPage({
         selectedReferenceTranslationIds,
         selectedParallelAcceleration,
         selectedParallelConcurrency,
+        selectedQualityMode,
+        selectedThinkingEnabled,
       ),
     [
       additionalRequirements,
@@ -195,6 +270,8 @@ export function ConfiguredTranslationPage({
       referenceTranslationIds,
       parallelAcceleration,
       parallelConcurrency,
+      qualityMode,
+      thinkingEnabled,
     ],
   );
 
@@ -257,6 +334,10 @@ export function ConfiguredTranslationPage({
         setErrorMessage("源文本不能超过 10,000 个 Unicode 码点。");
         return;
       }
+      if (options.qualityMode === "precision" && !runtime.startTranslation) {
+        setErrorMessage("当前运行时版本不支持精译，请更新插件后重试。");
+        return;
+      }
       setConfirmRiskCopy(false);
       setHostActionMessage("");
       if (options.beginNewTask) {
@@ -270,6 +351,8 @@ export function ConfiguredTranslationPage({
         setReferenceTranslationIds(options.referenceTranslationIds);
         setParallelAcceleration(options.parallelAcceleration);
         setParallelConcurrency(options.parallelConcurrency);
+        setQualityMode(options.qualityMode);
+        setThinkingEnabled(options.thinkingEnabled);
       } else if (options.referencePreviewToken) {
         setReferenceTranslationIds(options.referenceTranslationIds);
       }
@@ -278,6 +361,7 @@ export function ConfiguredTranslationPage({
       setPartialTranslation("");
       setIsTranslating(false);
       setParallelProgress(null);
+      setPrecisionStage(null);
       setSnapshotStale(false);
       const submittedInputs = buildCurrentInputs(
         text,
@@ -289,9 +373,15 @@ export function ConfiguredTranslationPage({
         options.referenceTranslationIds,
         options.parallelAcceleration,
         options.parallelConcurrency,
+        options.qualityMode,
+        options.thinkingEnabled,
       );
       try {
-        const nextResult = await runtime.startStandardTranslation({
+        const startRuntimeTranslation =
+          options.qualityMode === "precision"
+            ? runtime.startTranslation!
+            : runtime.startStandardTranslation;
+        const nextResult = await startRuntimeTranslation({
           taskId: taskId.current,
           sourceText: text,
           targetLanguage: options.targetLanguage,
@@ -304,6 +394,8 @@ export function ConfiguredTranslationPage({
           confirmationToken: options.confirmationToken,
           parallelAcceleration: submittedInputs.parallelAcceleration,
           parallelConcurrency: submittedInputs.parallelConcurrency,
+          qualityMode: submittedInputs.qualityMode,
+          thinkingEnabled: Boolean(submittedInputs.thinkingEnabled),
         }, (event) => {
           if (!mounted.current || generation !== requestGeneration.current) {
             return;
@@ -312,6 +404,11 @@ export function ConfiguredTranslationPage({
             setIsTranslating(true);
           } else if (event.type === "text_delta") {
             setPartialTranslation((current) => current + event.delta);
+          } else if (event.type === "precision_stage") {
+            setIsTranslating(true);
+            setPrecisionStage(event.stage);
+          } else if (event.type === "precision_plan") {
+            setPrecisionStage("analyzing");
           } else if (event.type === "parallel_plan") {
             setParallelProgress({
               completed: 0,
@@ -330,10 +427,12 @@ export function ConfiguredTranslationPage({
             });
           } else if (event.type === "finished") {
             setIsTranslating(false);
+            setPrecisionStage(null);
           }
         });
         if (mounted.current && generation === requestGeneration.current) {
           setIsTranslating(false);
+          setPrecisionStage(null);
           if (
             nextResult.status === "failed" &&
             nextResult.partialTranslation
@@ -350,6 +449,7 @@ export function ConfiguredTranslationPage({
       } catch {
         if (mounted.current && generation === requestGeneration.current) {
           setIsTranslating(false);
+          setPrecisionStage(null);
           setErrorMessage("翻译运行时发生异常，请稍后重试。");
         }
       }
@@ -378,6 +478,8 @@ export function ConfiguredTranslationPage({
         null,
         previousInputs?.parallelAcceleration ?? false,
         previousInputs?.parallelConcurrency ?? 3,
+        previousInputs?.qualityMode ?? "standard",
+        Boolean(previousInputs?.thinkingEnabled),
       );
       runtime.updateCurrentTranslationInputs(replacementInputs);
       setSourceText(replacementInputs.sourceText);
@@ -387,6 +489,8 @@ export function ConfiguredTranslationPage({
       setReferenceTranslationIds(null);
       setParallelAcceleration(replacementInputs.parallelAcceleration);
       setParallelConcurrency(replacementInputs.parallelConcurrency);
+      setQualityMode(replacementInputs.qualityMode);
+      setThinkingEnabled(Boolean(replacementInputs.thinkingEnabled));
       setParallelProgress(null);
       setReferencePreviewSelection([]);
       setResult(null);
@@ -423,9 +527,15 @@ export function ConfiguredTranslationPage({
             previousInputs?.additionalRequirements ??
             state.defaults.additionalRequirements;
           const autoTaskTerms: TaskTerm[] = [];
+          const autoQualityMode = previousInputs?.qualityMode ?? state.defaults.qualityMode;
+          const autoThinkingEnabled =
+            previousInputs?.thinkingEnabled ??
+            Boolean(state.serviceConfiguration?.thinkingEnabled);
           setTargetLanguage(autoTargetLanguage);
           setAdditionalRequirements(autoRequirements);
           setTaskTerms(autoTaskTerms);
+          setQualityMode(autoQualityMode);
+          setThinkingEnabled(autoThinkingEnabled);
           await startTranslation(
             state,
             initialText,
@@ -437,17 +547,22 @@ export function ConfiguredTranslationPage({
               referenceTranslationIds: null,
               parallelAcceleration: previousInputs?.parallelAcceleration ?? false,
               parallelConcurrency: previousInputs?.parallelConcurrency ?? 3,
+              qualityMode: autoQualityMode,
+              thinkingEnabled: autoThinkingEnabled,
             },
           );
         } else if (!runtime.getCurrentTranslation()) {
           setTargetLanguage(state.defaults.targetLanguage);
           setAdditionalRequirements(state.defaults.additionalRequirements);
+          setQualityMode(state.defaults.qualityMode);
+          setThinkingEnabled(Boolean(state.serviceConfiguration?.thinkingEnabled));
           runtime.updateCurrentTranslationInputs({
             sourceText: initialText,
             targetLanguage: state.defaults.targetLanguage,
             serviceConfigurationId: state.serviceConfiguration?.id ?? null,
             domainProfileId: selectedDomainProfileId,
-            qualityMode: "standard",
+            qualityMode: state.defaults.qualityMode,
+            thinkingEnabled: Boolean(state.serviceConfiguration?.thinkingEnabled),
             additionalRequirements: state.defaults.additionalRequirements,
             taskTerms: [],
             referenceTranslationIds: null,
@@ -494,6 +609,27 @@ export function ConfiguredTranslationPage({
     sourceText,
     configuration?.serviceConfiguration?.id,
   );
+  const translationCallPlan = runtime.getTranslationCallPlan?.({
+    sourceText,
+    qualityMode,
+    parallelAcceleration,
+    parallelConcurrency,
+  }) ?? {
+    qualityMode,
+    translationCalls: 1,
+    segmentCount: 1,
+    maximumCallCount: qualityMode === "precision" ? 5 : 1,
+  };
+  const precisionStageText =
+    precisionStage === "preparing"
+      ? "正在准备翻译任务…"
+      : precisionStage === "analyzing"
+      ? "正在分析全文…"
+      : precisionStage === "reviewing"
+        ? "正在并行进行准确性审校和语言审校…"
+        : precisionStage === "revising"
+          ? "正在定向修订风险段落…"
+          : null;
 
   function replaceTaskTerms(nextTaskTerms: TaskTerm[]) {
     deferredActionGeneration.current += 1;
@@ -561,7 +697,7 @@ export function ConfiguredTranslationPage({
       <p className="task-summary">
         目标语言：{targetLanguage.displayName ?? targetLanguage.modelLabel}
         <span aria-hidden="true"> · </span>
-        质量模式：标准模式
+        质量模式：{qualityMode === "precision" ? "精译模式" : "标准模式"}
       </p>
       {configuration?.serviceConfiguration?.maskedApiKey ? (
         <p>
@@ -572,7 +708,7 @@ export function ConfiguredTranslationPage({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (configuration) {
+          if (configuration && !isSwitchingService) {
             void startTranslation(configuration, sourceText, {
               beginNewTask: true,
               targetLanguage,
@@ -582,6 +718,8 @@ export function ConfiguredTranslationPage({
               referenceTranslationIds: null,
               parallelAcceleration,
               parallelConcurrency,
+              qualityMode,
+              thinkingEnabled,
             });
           }
         }}
@@ -594,40 +732,55 @@ export function ConfiguredTranslationPage({
               value={configuration?.serviceConfiguration?.id ?? ""}
               onChange={(event) => {
                 const configurationId = event.target.value;
-                if (
-                  result?.status === "confirmation_required" ||
-                  result?.status === "reference_confirmation_required"
-                ) {
+                if (result && result.status !== "completed" && result.status !== "failed") {
                   runtime.cancelTranslation(taskId.current);
                   setResult(null);
                 }
                 deferredActionGeneration.current += 1;
                 const selectionGeneration = ++serviceSelectionGeneration.current;
+                thinkingUpdateGeneration.current += 1;
+                setIsSwitchingService(true);
+                setErrorMessage("");
                 void runtime
                   .setCurrentServiceConfiguration(configurationId)
                   .then((serviceState) => {
+                    if (
+                      !mounted.current ||
+                      selectionGeneration !== serviceSelectionGeneration.current
+                    ) {
+                      return null;
+                    }
                     setServiceConfigurations(serviceState.serviceConfigurations);
                     return runtime.getServiceConfiguration(configurationId);
                   })
                   .then((selectedConfiguration) => {
                     if (
+                      !selectedConfiguration ||
                       !mounted.current ||
                       selectionGeneration !== serviceSelectionGeneration.current
                     ) {
                       return;
                     }
                     setConfiguration(selectedConfiguration);
+                    setThinkingEnabled(
+                      Boolean(selectedConfiguration.serviceConfiguration?.thinkingEnabled),
+                    );
                     const latestInputs = runtime.getCurrentTranslation()?.inputs;
                     publishInputs({
                       ...(latestInputs ?? currentInputs()),
                       serviceConfigurationId: configurationId,
+                      thinkingEnabled: Boolean(
+                        selectedConfiguration.serviceConfiguration?.thinkingEnabled,
+                      ),
                     });
+                    setIsSwitchingService(false);
                   })
                   .catch(() => {
                     if (
                       mounted.current &&
                       selectionGeneration === serviceSelectionGeneration.current
                     ) {
+                      setIsSwitchingService(false);
                       setErrorMessage("服务配置切换失败。");
                     }
                   });
@@ -647,13 +800,17 @@ export function ConfiguredTranslationPage({
           value={domainProfileId ?? ""}
           onChange={(event) => {
             const nextDomainProfileId = event.target.value || null;
+            const selectionGeneration = ++domainSelectionGeneration.current;
             deferredActionGeneration.current += 1;
             setDomainProfileId(nextDomainProfileId);
             setReferenceTranslationIds(null);
             void runtime
               .setCurrentDomainProfile(nextDomainProfileId)
               .then((terminology) => {
-                if (!mounted.current) return;
+                if (
+                  !mounted.current ||
+                  selectionGeneration !== domainSelectionGeneration.current
+                ) return;
                 setDomainProfiles(terminology.domainProfiles);
                 const latestInputs = runtime.getCurrentTranslation()?.inputs;
                 publishInputs({
@@ -663,7 +820,10 @@ export function ConfiguredTranslationPage({
                 });
               })
               .catch(() => {
-                if (mounted.current) setErrorMessage("行业配置切换失败。");
+                if (
+                  mounted.current &&
+                  selectionGeneration === domainSelectionGeneration.current
+                ) setErrorMessage("行业配置切换失败。");
               });
           }}
         >
@@ -698,7 +858,7 @@ export function ConfiguredTranslationPage({
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
-              if (configuration) {
+              if (configuration && !isSwitchingService) {
                 void startTranslation(
                   configuration,
                   sourceText,
@@ -711,6 +871,8 @@ export function ConfiguredTranslationPage({
                     referenceTranslationIds: null,
                     parallelAcceleration,
                     parallelConcurrency,
+                    qualityMode,
+                    thinkingEnabled,
                   },
                 );
               }
@@ -761,6 +923,95 @@ export function ConfiguredTranslationPage({
             );
           }}
         />
+        <fieldset className="quality-mode-settings">
+          <legend>翻译质量</legend>
+          <label htmlFor="quality-mode">质量模式</label>
+          <select
+            id="quality-mode"
+            value={qualityMode}
+            onChange={(event) => {
+              const nextQualityMode = event.target.value as TranslationQualityMode;
+              deferredActionGeneration.current += 1;
+              setQualityMode(nextQualityMode);
+              publishInputs({
+                ...currentInputs(),
+                qualityMode: nextQualityMode,
+              });
+            }}
+          >
+            <option value="standard">标准模式</option>
+            <option value="precision">精译模式</option>
+          </select>
+          {qualityMode === "precision" ? (
+            <p className="precision-call-plan">
+              本次计划：1 次分析 + {translationCallPlan.translationCalls} 次翻译 + 2
+              次并行审校 + 最多 1 次修订。
+            </p>
+          ) : null}
+          {qualityMode === "precision" &&
+          configuration?.serviceConfiguration?.type === "deepseek-official" ? (
+            <>
+              <label htmlFor="deepseek-thinking">
+                <input
+                  id="deepseek-thinking"
+                  type="checkbox"
+                  checked={thinkingEnabled}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    const configurationId = configuration.serviceConfiguration?.id;
+                    if (!configurationId || !runtime.setServiceThinkingMode) return;
+                    const updateGeneration = ++thinkingUpdateGeneration.current;
+                    const selectionGeneration = serviceSelectionGeneration.current;
+                    deferredActionGeneration.current += 1;
+                    setThinkingEnabled(enabled);
+                    publishInputs({
+                      ...currentInputs(),
+                      thinkingEnabled: enabled,
+                    });
+                    void runtime
+                      .setServiceThinkingMode(configurationId, enabled)
+                      .then((serviceState) => {
+                        if (
+                          !mounted.current ||
+                          updateGeneration !== thinkingUpdateGeneration.current ||
+                          selectionGeneration !== serviceSelectionGeneration.current ||
+                          configurationId !== configuration.serviceConfiguration?.id
+                        ) return;
+                        const serviceConfiguration = serviceState.serviceConfigurations.find(
+                          (service) => service.id === configurationId,
+                        );
+                        if (serviceConfiguration) {
+                          setConfiguration((current) =>
+                            current?.serviceConfiguration?.id === configurationId
+                              ? { ...current, serviceConfiguration }
+                              : current,
+                          );
+                        }
+                      })
+                      .catch(() => {
+                        if (
+                          !mounted.current ||
+                          updateGeneration !== thinkingUpdateGeneration.current ||
+                          selectionGeneration !== serviceSelectionGeneration.current ||
+                          configurationId !== configuration.serviceConfiguration?.id
+                        ) return;
+                        setThinkingEnabled(!enabled);
+                        publishInputs({
+                          ...currentInputs(),
+                          thinkingEnabled: !enabled,
+                        });
+                        setErrorMessage("思考模式设置保存失败。");
+                      });
+                  }}
+                />
+                DeepSeek 思考模式
+              </label>
+              {thinkingEnabled ? (
+                <p>精译的分析、翻译、审校和修订都会启用思考，等待时间和费用可能明显增加。</p>
+              ) : null}
+            </>
+          ) : null}
+        </fieldset>
         <fieldset className="parallel-acceleration-settings">
           <legend>长文本翻译</legend>
           <label htmlFor="parallel-acceleration">
@@ -872,8 +1123,8 @@ export function ConfiguredTranslationPage({
             新增本次术语
           </button>
         </fieldset>
-        <button type="submit" disabled={!configuration}>
-          开始翻译
+        <button type="submit" disabled={!configuration || isSwitchingService}>
+          {qualityMode === "precision" ? "开始精译" : "开始翻译"}
         </button>
         <button
           type="button"
@@ -889,6 +1140,11 @@ export function ConfiguredTranslationPage({
             setAdditionalRequirements(
               configuration?.defaults.additionalRequirements ?? "",
             );
+            setQualityMode(configuration?.defaults.qualityMode ?? "standard");
+            setThinkingEnabled(
+              Boolean(configuration?.serviceConfiguration?.thinkingEnabled),
+            );
+            setPrecisionStage(null);
             setErrorMessage("");
             void runtime
               .getTerminologyState()
@@ -921,9 +1177,12 @@ export function ConfiguredTranslationPage({
       {isTranslating ? (
         <section className="translation-progress">
           <p role="status">
-            {parallelProgress && parallelProgress.total > 1
+            {precisionStageText ??
+            (parallelProgress && parallelProgress.total > 1
               ? `并发翻译：已完成 ${parallelProgress.completed}/${parallelProgress.total} 段，正在处理 ${parallelProgress.inFlight} 段。`
-              : "正在翻译…"}
+              : qualityMode === "precision"
+                ? "正在生成精译初稿…"
+                : "正在翻译…")}
           </p>
           {parallelProgress?.fallbackReason ? (
             <p className="parallel-fallback-note">{parallelProgress.fallbackReason}</p>
@@ -934,13 +1193,17 @@ export function ConfiguredTranslationPage({
             aria-label="译文生成中"
             aria-live="off"
           >
-            {partialTranslation || "正在等待模型返回译文…"}
+            {partialTranslation ||
+              (precisionStage === "analyzing"
+                ? "分析完成后开始生成译文。"
+                : "正在等待模型返回译文…")}
           </div>
           <button
             type="button"
             onClick={() => {
               runtime.cancelTranslation(taskId.current);
               setIsTranslating(false);
+              setPrecisionStage(null);
             }}
           >
             取消翻译
@@ -990,6 +1253,8 @@ export function ConfiguredTranslationPage({
                     referenceTranslationIds,
                     parallelAcceleration,
                     parallelConcurrency,
+                    qualityMode,
+                    thinkingEnabled,
                   });
                 })
                 .catch(() => {
@@ -1025,6 +1290,12 @@ export function ConfiguredTranslationPage({
           <p>
             以下译例由本地文本相似度选出。只有勾选的译例会随本次请求发送，最多三条。
           </p>
+          {qualityMode === "precision" ? (
+            <p>
+              本次计划：1 次分析 + {translationCallPlan.translationCalls} 次翻译 + 2
+              次并行审校 + 最多 1 次修订。
+            </p>
+          ) : null}
           <fieldset>
             <legend>本次发送的参考译例</legend>
             {referenceConfirmation.referenceTranslations.map((reference, index) => (
@@ -1072,6 +1343,8 @@ export function ConfiguredTranslationPage({
                   referenceTranslationIds: referencePreviewSelection,
                   parallelAcceleration,
                   parallelConcurrency,
+                  qualityMode,
+                  thinkingEnabled,
                 });
               }}
             >
@@ -1103,7 +1376,21 @@ export function ConfiguredTranslationPage({
               <li key={item}>{item}</li>
             ))}
           </ul>
-          <p>标准模式本次发起 {confirmation.preview.callCount} 次翻译调用。</p>
+          {confirmation.preview.qualityMode === "precision" &&
+          confirmation.preview.precisionCallPlan ? (
+            <>
+              <p>
+                精译会让同一服务多次处理本次翻译数据，请确认后再发送。
+              </p>
+              <p>
+                本次计划：1 次分析 + {confirmation.preview.precisionCallPlan.translationCalls}
+                次翻译 + 2 次并行审校 + 最多 1 次修订，最多共
+                {confirmation.preview.precisionCallPlan.maximumCallCount} 次调用。
+              </p>
+            </>
+          ) : (
+            <p>标准模式本次发起 {confirmation.preview.callCount} 次翻译调用。</p>
+          )}
           {confirmation.preview.parallel?.fallbackReason ? (
             <p className="parallel-fallback-note">
               {confirmation.preview.parallel.fallbackReason}
@@ -1135,6 +1422,8 @@ export function ConfiguredTranslationPage({
                       referenceTranslationIds,
                       parallelAcceleration,
                       parallelConcurrency,
+                      qualityMode,
+                      thinkingEnabled,
                     },
                   );
                 }
@@ -1193,6 +1482,51 @@ export function ConfiguredTranslationPage({
       {result?.status === "completed" ? (
         <>
           <p role="status">翻译已完成。</p>
+          {result.precision && !result.precision.complete ? (
+            <p role="alert">
+              精译未完成，已保留初译。
+              {result.precision.failedStage
+                ? `未完成阶段：${PRECISION_STAGE_LABELS[result.precision.failedStage]}。`
+                : ""}
+            </p>
+          ) : null}
+          {result.precision?.analysis ? (
+            <section aria-labelledby="precision-analysis-heading">
+              <h2 id="precision-analysis-heading">精译分析</h2>
+              <p>识别的源语言：{result.precision.analysis.detectedSourceLanguage}</p>
+              {result.precision.analysis.inferredDomain.name ? (
+                <p>
+                  分析出的领域：{result.precision.analysis.inferredDomain.name}（置信度：
+                  {result.precision.analysis.inferredDomain.confidence}）。用户选择的行业配置不会因此改变。
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+          {result.precision &&
+          (result.precision.reviewIssues.length > 0 ||
+            result.precision.revisedSegmentIds.length > 0 ||
+            result.precision.unresolvedIssueIds.length > 0) ? (
+            <section aria-labelledby="precision-review-heading">
+              <h2 id="precision-review-heading">精译审校与修订</h2>
+              {result.precision.reviewIssues.length > 0 ? (
+                <ul>
+                  {result.precision.reviewIssues.map((issue) => (
+                    <li key={`${issue.reviewRole}:${issue.id}`}>
+                      {issue.reviewRole === "accuracy" ? "准确性" : "语言"}风险（
+                      {PRECISION_ISSUE_LABELS[issue.type] ?? issue.type}）：
+                      {issue.suggestion}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {result.precision.revisedSegmentIds.length > 0 ? (
+                <p>已定向修订 {result.precision.revisedSegmentIds.length} 个风险段落。</p>
+              ) : null}
+              {result.precision.unresolvedIssueIds.length > 0 ? (
+                <p>仍有 {result.precision.unresolvedIssueIds.length} 项风险需要人工复核。</p>
+              ) : null}
+            </section>
+          ) : null}
           <section aria-label="译文">{result.translation}</section>
           <div className="translation-actions">
             <button
@@ -1243,7 +1577,51 @@ export function ConfiguredTranslationPage({
         </>
       ) : null}
       {result?.status === "failed" ? (
-        <p role="alert">{result.error.message}</p>
+        <section>
+          <p role="alert">
+            {result.precision
+              ? `精译未完成${
+                  result.precision.failedStage
+                    ? `，失败阶段：${PRECISION_STAGE_LABELS[result.precision.failedStage]}`
+                    : ""
+                }。${result.error.message}`
+              : result.error.message}
+          </p>
+          {result.precision ? (
+            <div className="compact-actions">
+              <button
+                type="button"
+                disabled={!configuration || isSwitchingService}
+                onClick={() => {
+                  if (!configuration || isSwitchingService) return;
+                  void startTranslation(configuration, sourceText, {
+                    beginNewTask: true,
+                    targetLanguage,
+                    domainProfileId,
+                    additionalRequirements,
+                    taskTerms,
+                    referenceTranslationIds,
+                    parallelAcceleration,
+                    parallelConcurrency,
+                    qualityMode: "precision",
+                    thinkingEnabled,
+                  });
+                }}
+              >
+                重试精译
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setQualityMode("standard");
+                  publishInputs({ ...currentInputs(), qualityMode: "standard" });
+                }}
+              >
+                改用标准模式
+              </button>
+            </div>
+          ) : null}
+        </section>
       ) : null}
       {result?.status === "failed" && partialTranslation ? (
         <>

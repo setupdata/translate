@@ -14,9 +14,12 @@ function configurationError() {
   return error;
 }
 
-function createTranslationProtocolOperation({
+function createProtocolOperation({
   configuration,
   input,
+  systemPrompt,
+  stream = configuration.stream,
+  thinkingEnabled = false,
   onTextDelta = () => undefined,
 }) {
   let body;
@@ -26,9 +29,9 @@ function createTranslationProtocolOperation({
   if (configuration.protocol === "responses") {
     body = JSON.stringify({
       model: configuration.model,
-      instructions: TRANSLATION_SYSTEM_PROMPT,
+      instructions: systemPrompt,
       input: JSON.stringify(input),
-      stream: configuration.stream,
+      stream,
     });
     createStreamParser = createResponsesSseParser;
     parseNormalResponse = parseResponsesResponse;
@@ -36,12 +39,12 @@ function createTranslationProtocolOperation({
     body = JSON.stringify({
       model: configuration.model,
       messages: [
-        { role: "system", content: TRANSLATION_SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt },
         { role: "user", content: JSON.stringify(input) },
       ],
-      stream: configuration.stream,
+      stream,
       ...(configuration.type === "deepseek-official"
-        ? { thinking: { type: "disabled" } }
+        ? { thinking: { type: thinkingEnabled ? "enabled" : "disabled" } }
         : {}),
     });
     createStreamParser = createChatSseParser;
@@ -50,7 +53,7 @@ function createTranslationProtocolOperation({
     throw configurationError();
   }
 
-  const parser = configuration.stream
+  const parser = stream
     ? createStreamParser({ onTextDelta })
     : null;
 
@@ -79,6 +82,22 @@ function createTranslationProtocolOperation({
   });
 }
 
+function createTranslationProtocolOperation({
+  configuration,
+  input,
+  thinkingEnabled = false,
+  onTextDelta = () => undefined,
+}) {
+  return createProtocolOperation({
+    configuration,
+    input,
+    systemPrompt: TRANSLATION_SYSTEM_PROMPT,
+    thinkingEnabled,
+    onTextDelta,
+  });
+}
+
 module.exports = {
+  createProtocolOperation,
   createTranslationProtocolOperation,
 };

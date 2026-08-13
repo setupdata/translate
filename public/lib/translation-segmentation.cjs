@@ -518,6 +518,7 @@ async function runSegmentPool({
   if (typeof translate !== "function") throw new TypeError("translate must be a function");
 
   const results = [];
+  const partialResults = new Map();
   const controllers = new Set();
   let nextIndex = 0;
   let failure = null;
@@ -553,6 +554,9 @@ async function runSegmentPool({
           total: segments.length,
         });
       } catch (error) {
+        if (error && error.partialSegmentResult) {
+          partialResults.set(error.partialSegmentResult.id, error.partialSegmentResult);
+        }
         if (!failure) failure = error;
         abortInFlight();
         return;
@@ -574,6 +578,7 @@ async function runSegmentPool({
   }
   if (failure) {
     failure.segmentResults = [...results];
+    failure.partialSegmentResults = [...partialResults.values()];
     throw failure;
   }
   return results;

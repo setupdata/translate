@@ -3,6 +3,7 @@ const API_KEY_PREFIX = "ruyi.secret.api-key.";
 const TERMINOLOGY_KEY = "ruyi.secret.terminology.v1";
 const { randomBytes } = require("crypto");
 const {
+  OUTPUT_CODE_POINT_LIMIT,
   countCodePoints,
   createOutputAccumulator,
   inspectSourceText,
@@ -12,8 +13,19 @@ const {
   inspectTranslationQuality,
 } = require("./quality-checks.cjs");
 const {
+  createProtocolOperation,
   createTranslationProtocolOperation,
 } = require("./translation-protocol.cjs");
+const {
+  parseStructuredOutput,
+  validatePromptContract,
+} = require("./prompt-contracts.cjs");
+const {
+  ACCURACY_REVIEW_SYSTEM_PROMPT,
+  ANALYSIS_SYSTEM_PROMPT,
+  LANGUAGE_REVIEW_SYSTEM_PROMPT,
+  REVISION_SYSTEM_PROMPT,
+} = require("./prompts.cjs");
 const {
   DEEPSEEK_FLASH_PRESET,
   configurationError,
@@ -260,7 +272,9 @@ function normalizeCurrentInputs(inputs) {
       inputs && typeof inputs.domainProfileId === "string"
         ? inputs.domainProfileId
         : null,
-    qualityMode: "standard",
+    qualityMode:
+      inputs && inputs.qualityMode === "precision" ? "precision" : "standard",
+    thinkingEnabled: Boolean(inputs && inputs.thinkingEnabled),
     additionalRequirements:
       inputs && typeof inputs.additionalRequirements === "string"
         ? inputs.additionalRequirements
@@ -284,6 +298,7 @@ function inputsFingerprint(inputs) {
     inputs.serviceConfigurationId,
     inputs.domainProfileId,
     inputs.qualityMode,
+    inputs.thinkingEnabled,
     inputs.additionalRequirements,
     inputs.taskTerms,
     inputs.referenceTranslationIds,
@@ -306,6 +321,53 @@ function parallelSummaryFor(inputs, plan) {
     segmentCount: applied ? plan.segments.length : 1,
     fallbackReason: plan.fallbackReason,
   });
+}
+
+function precisionCallPlanFor(inputs, plan) {
+  const translationCalls =
+    inputs.parallelAcceleration && plan && plan.mode === "segmented"
+      ? plan.segments.length
+      : 1;
+  return freezeDeep({
+    analysisCalls: 1,
+    translationCalls,
+    reviewCalls: 2,
+    maximumRevisionCalls: 1,
+    maximumCallCount: translationCalls + 4,
+    segmentCount: translationCalls,
+  });
+}
+
+function fullDocumentSegment(sourceText) {
+  const normalizedSourceText = String(sourceText).replace(/\r\n/gu, "\n");
+  const sourceEnd = countCodePoints(normalizedSourceText);
+  return freezeDeep({
+    id: `document-0-0-${sourceEnd}`,
+    ordinal: 0,
+    sourceStart: 0,
+    sourceEnd,
+    sourceContextBefore: "",
+    ownedSource: normalizedSourceText,
+    sourceContextAfter: "",
+  });
+}
+
+function precisionSegmentsFor(sourceText, plan, parallel) {
+  return parallel && parallel.applied
+    ? [...plan.segments]
+    : [fullDocumentSegment(sourceText)];
+}
+
+function baseTaskData(input) {
+  return {
+    taskId: input.taskId,
+    targetLanguage: input.targetLanguage,
+    domainProfile: input.domainProfile,
+    matchedTerms: input.matchedTerms,
+    referenceTranslations: input.referenceTranslations,
+    additionalRequirements: input.additionalRequirements,
+    protectedItems: input.protectedItems,
+  };
 }
 
 function segmentTranslationInput(fullDocumentInput, segment) {
@@ -338,6 +400,31 @@ function segmentTranslationInput(fullDocumentInput, segment) {
       sourceContextAfter: segment.sourceContextAfter,
     },
   };
+}
+
+function partialSegmentResultsFromError(error) {
+  const byId = new Map();
+  const completed = Array.isArray(error && error.segmentResults)
+    ? error.segmentResults
+    : [];
+  for (const result of completed) byId.set(result.id, result);
+  const partials = [
+    ...(Array.isArray(error && error.partialSegmentResults)
+      ? error.partialSegmentResults
+      : []),
+    ...(error && error.partialSegmentResult ? [error.partialSegmentResult] : []),
+  ];
+  for (const result of partials) {
+    if (!byId.has(result.id)) byId.set(result.id, result);
+  }
+  return [...byId.values()];
+}
+
+function outputLimitError(partialTranslation) {
+  return Object.assign(new Error(errorMessage("response_too_large")), {
+    code: "response_too_large",
+    partialTranslation,
+  });
 }
 
 function transportResponseError(response) {
@@ -401,6 +488,7 @@ function createRuyiRuntime({
                 serviceConfigurationId: task.serviceConfigurationId,
                 domainProfileId: task.domainProfileId,
                 qualityMode: task.qualityMode,
+                thinkingEnabled: task.thinkingEnabled,
                 additionalRequirements: task.additionalRequirements,
                 taskTerms: task.taskTerms,
                 referenceTranslationIds: task.referenceTranslationIds,
@@ -461,20 +549,26 @@ function createRuyiRuntime({
   function beginCurrentTask(request, targetLanguage) {
     const settings = readSettings();
     const terminologyState = readTerminologyState();
+    const serviceConfigurationId =
+      typeof request.serviceConfigurationId === "string"
+        ? request.serviceConfigurationId
+        : settings.currentServiceConfigurationId;
+    const selectedConfiguration = findConfiguration(settings, serviceConfigurationId);
     const inputs = normalizeCurrentInputs({
       sourceText: request.sourceText,
       targetLanguage,
-      serviceConfigurationId:
-        typeof request.serviceConfigurationId === "string"
-          ? request.serviceConfigurationId
-          : settings.currentServiceConfigurationId,
+      serviceConfigurationId,
       domainProfileId:
         request.domainProfileId === null
           ? null
           : typeof request.domainProfileId === "string"
             ? request.domainProfileId
             : terminologyState.currentDomainProfileId,
-      qualityMode: "standard",
+      qualityMode: request.qualityMode === "precision" ? "precision" : "standard",
+      thinkingEnabled:
+        request.thinkingEnabled === undefined
+          ? Boolean(selectedConfiguration && selectedConfiguration.thinkingEnabled)
+          : Boolean(request.thinkingEnabled),
       additionalRequirements:
         typeof request.additionalRequirements === "string"
           ? request.additionalRequirements
@@ -967,6 +1061,7 @@ function createRuyiRuntime({
           preserveRules: [...selectedDomainProfile.preserveRules],
         }
       : null;
+    const normalizedSourceText = request.sourceText.replace(/\r\n/gu, "\n");
     const input = {
       schemaVersion: "translation-input.v1",
       taskId: request.taskId,
@@ -975,11 +1070,11 @@ function createRuyiRuntime({
       matchedTerms: terminologyResolution.matchedTerms,
       referenceTranslations,
       additionalRequirements: submittedInputs.additionalRequirements,
-      protectedItems: extractProtectedItems(request.sourceText),
-      qualityMode: "standard",
+      protectedItems: extractProtectedItems(normalizedSourceText),
+      qualityMode: submittedInputs.qualityMode,
       mode: "full_document",
       analysis: null,
-      sourceText: request.sourceText,
+      sourceText: normalizedSourceText,
     };
     validateTranslationInputBudget({ input });
     return {
@@ -1113,6 +1208,23 @@ function createRuyiRuntime({
     return serviceConfigurationsState(settings);
   }
 
+  async function setServiceThinkingMode(configurationId, enabled) {
+    const settings = readSettings();
+    const configuration = findConfiguration(settings, configurationId);
+    if (!configuration) throw configurationError(null, "服务配置不存在。");
+    if (configuration.type !== "deepseek-official") {
+      throw configurationError(
+        "thinkingEnabled",
+        "思考模式只适用于 DeepSeek 官方配置。",
+      );
+    }
+    assertConfigurationCanBeEdited(configurationId);
+    configuration.thinkingEnabled = Boolean(enabled);
+    plainStorage.setItem(SETTINGS_KEY, settings);
+    markCurrentTranslationForConfigurationChange(configurationId);
+    return serviceConfigurationsState(settings);
+  }
+
   function getParallelAccelerationAdvice(sourceText, configurationId) {
     const settings = readSettings();
     const configuration = findConfiguration(
@@ -1131,6 +1243,37 @@ function createRuyiRuntime({
           ? inspectSourceText(sourceText).normalizedCodePointCount
           : 0,
       performanceSummary: summary,
+    });
+  }
+
+  function getTranslationCallPlan({
+    sourceText = "",
+    qualityMode = "standard",
+    parallelAcceleration = false,
+    parallelConcurrency = 3,
+  } = {}) {
+    const plan = parallelAcceleration ? createTranslationPlan(sourceText) : null;
+    const translationCalls =
+      parallelAcceleration && plan && plan.mode === "segmented"
+        ? plan.segments.length
+        : 1;
+    if (qualityMode !== "precision") {
+      return freezeDeep({
+        qualityMode: "standard",
+        translationCalls,
+        maximumCallCount: translationCalls,
+        segmentCount: translationCalls,
+      });
+    }
+    return freezeDeep({
+      qualityMode: "precision",
+      ...precisionCallPlanFor(
+        {
+          parallelAcceleration,
+          parallelConcurrency,
+        },
+        plan,
+      ),
     });
   }
 
@@ -1184,7 +1327,14 @@ function createRuyiRuntime({
       currentTranslation &&
       currentTranslation.task &&
       currentTranslation.task.serviceConfigurationId === configurationId &&
-      ["preparing", "awaiting_confirmation", "translating"].includes(
+      [
+        "preparing",
+        "awaiting_confirmation",
+        "analyzing",
+        "translating",
+        "reviewing",
+        "revising",
+      ].includes(
         currentTranslation.phase,
       );
     const pendingConfirmationUsesConfiguration = [...pendingConfirmations.values()].some(
@@ -1275,7 +1425,9 @@ function createRuyiRuntime({
     copy.cachedModels = [];
     copy.modelsFetchedAt = null;
     copy.performanceSamples = [];
+    copy.thinkingEnabled = false;
     delete copy.confirmedTranslationUrl;
+    delete copy.confirmedPrecisionTranslationUrl;
     configurations.push(copy);
     settings.currentServiceConfigurationId = copy.id;
     plainStorage.setItem(SETTINGS_KEY, settings);
@@ -1525,7 +1677,987 @@ function createRuyiRuntime({
     }
   }
 
+  async function startPrecisionTranslation(request, onProgress = () => undefined) {
+    if (
+      !request ||
+      typeof request.sourceText !== "string" ||
+      request.sourceText.trim().length === 0
+    ) {
+      return {
+        status: "validation_error",
+        reason: "invalid_source_text",
+        sourceRetained: true,
+      };
+    }
+    const sourceInspection = inspectSourceText(request.sourceText);
+    if (!sourceInspection.valid) {
+      return {
+        status: "validation_error",
+        reason: "source_text_too_long",
+        sourceRetained: true,
+      };
+    }
+    const targetLanguage = normalizeTargetLanguage(request.targetLanguage);
+    if (!targetLanguage) {
+      return {
+        status: "validation_error",
+        reason: "invalid_target_language",
+        sourceRetained: true,
+      };
+    }
+    if (
+      request.parallelAcceleration &&
+      request.parallelConcurrency !== undefined &&
+      (!Number.isInteger(request.parallelConcurrency) ||
+        request.parallelConcurrency < 1 ||
+        request.parallelConcurrency > 6)
+    ) {
+      return {
+        status: "validation_error",
+        reason: "invalid_parallel_configuration",
+        field: "parallelConcurrency",
+        message: "并发数必须是 1 至 6 的整数。",
+        sourceRetained: true,
+      };
+    }
+    if (
+      request.referenceTranslationIds !== undefined &&
+      request.referenceTranslationIds !== null &&
+      !Array.isArray(request.referenceTranslationIds)
+    ) {
+      return {
+        status: "validation_error",
+        reason: "invalid_reference_selection",
+        field: "referenceTranslationIds",
+        message: "参考译例选择必须是数组。",
+        sourceRetained: true,
+      };
+    }
+    if (
+      Array.isArray(request.referenceTranslationIds) &&
+      request.referenceTranslationIds.length > 3
+    ) {
+      return {
+        status: "validation_error",
+        reason: "input_budget_exceeded",
+        field: "referenceTranslationIds",
+        message: "参考译例最多选择 3 条，不能截断多余条目。",
+        sourceRetained: true,
+      };
+    }
+    if (request.taskTerms !== undefined && !Array.isArray(request.taskTerms)) {
+      return {
+        status: "validation_error",
+        reason: "invalid_terminology",
+        field: "taskTerms",
+        message: "本次术语必须是数组。",
+        sourceRetained: true,
+      };
+    }
+
+    const precisionRequest = { ...request, qualityMode: "precision" };
+    const { inputs: submittedInputs } = beginCurrentTask(
+      precisionRequest,
+      targetLanguage,
+    );
+    let terminologyPreparation;
+    try {
+      terminologyPreparation = prepareTerminologyInput(
+        precisionRequest,
+        targetLanguage,
+        submittedInputs,
+      );
+    } catch (error) {
+      const result = {
+        status: "validation_error",
+        reason:
+          error && error.code === "terminology_limit_exceeded"
+            ? "terminology_limit_exceeded"
+            : error && error.code === "input_budget_exceeded"
+              ? "input_budget_exceeded"
+              : error && error.code === "reference_validation_error"
+                ? "invalid_reference_selection"
+                : "invalid_terminology",
+        ...(error && error.field ? { field: error.field } : {}),
+        message:
+          error && typeof error.message === "string"
+            ? error.message
+            : "术语配置无效。",
+        sourceRetained: true,
+      };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
+    }
+    if (terminologyPreparation.terminologyResolution.conflicts.length > 0) {
+      const result = {
+        status: "validation_error",
+        reason: "terminology_conflict",
+        sourceRetained: true,
+        terminologyConflicts: terminologyPreparation.terminologyResolution.conflicts,
+      };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
+    }
+    if (terminologyPreparation.referencePreviewRequired) {
+      const previewToken = tokenFactory();
+      pendingReferencePreviews.set(previewToken, {
+        taskId: request.taskId,
+        sourceText: request.sourceText,
+        inputsFingerprint: referencePreviewFingerprint(submittedInputs),
+        candidates: terminologyPreparation.referenceCandidates,
+      });
+      const result = freezeDeep({
+        status: "reference_confirmation_required",
+        sourceRetained: true,
+        previewToken,
+        referenceTranslations: terminologyPreparation.referenceCandidates.map(
+          (reference) => ({ ...reference }),
+        ),
+      });
+      storeCurrentResult(request.taskId, result, "awaiting_confirmation");
+      return result;
+    }
+
+    const { input, terminologyResolution } = terminologyPreparation;
+    const translationPlan = submittedInputs.parallelAcceleration
+      ? createTranslationPlan(request.sourceText)
+      : null;
+    const parallel = translationPlan
+      ? parallelSummaryFor(submittedInputs, translationPlan)
+      : null;
+    const callPlan = precisionCallPlanFor(submittedInputs, translationPlan);
+    const precisionSegments = precisionSegmentsFor(
+      request.sourceText,
+      translationPlan,
+      parallel,
+    );
+
+    preparingTaskIds.add(request.taskId);
+    let state;
+    try {
+      state = await getServiceConfiguration(submittedInputs.serviceConfigurationId);
+    } finally {
+      preparingTaskIds.delete(request.taskId);
+    }
+    if (cancelledPreparingTaskIds.delete(request.taskId)) {
+      const result = {
+        status: "failed",
+        taskId: request.taskId,
+        sourceRetained: true,
+        precision: { complete: false, failedStage: "preparing", callPlan },
+        error: { code: "cancelled", message: errorMessage("cancelled") },
+      };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
+    }
+    if (!state.serviceConfiguration) {
+      const result = {
+        status: "configuration_required",
+        reason: "missing_configuration",
+        sourceRetained: true,
+        serviceConfiguration: null,
+      };
+      storeCurrentResult(request.taskId, result, "needs_configuration");
+      return result;
+    }
+    if (
+      state.serviceConfiguration.authentication === "bearer" &&
+      !state.serviceConfiguration.hasApiKey
+    ) {
+      const result = {
+        status: "configuration_required",
+        reason: "missing_api_key",
+        sourceRetained: true,
+        serviceConfiguration: state.serviceConfiguration,
+      };
+      storeCurrentResult(request.taskId, result, "needs_configuration");
+      return result;
+    }
+
+    const settings = readSettings();
+    const configuration = findConfiguration(
+      settings,
+      submittedInputs.serviceConfigurationId,
+    );
+    let normalizedTranslationUrl;
+    try {
+      normalizedTranslationUrl = normalizeServiceUrl(
+        configuration.translationUrl,
+        "translationUrl",
+        apiKeyFor(configuration.id),
+      );
+    } catch {
+      const result = {
+        status: "failed",
+        taskId: request.taskId,
+        sourceRetained: true,
+        precision: { complete: false, failedStage: "preparing", callPlan },
+        error: {
+          code: "configuration_error",
+          message: errorMessage("configuration_error"),
+        },
+      };
+      storeCurrentResult(request.taskId, result, "failed");
+      return result;
+    }
+
+    if (
+      configuration.confirmedTranslationUrl !== normalizedTranslationUrl ||
+      configuration.confirmedPrecisionTranslationUrl !== normalizedTranslationUrl
+    ) {
+      const pending = request.confirmationToken
+        ? pendingConfirmations.get(request.confirmationToken)
+        : undefined;
+      if (request.confirmationToken) {
+        pendingConfirmations.delete(request.confirmationToken);
+        if (
+          !sameConfirmationRequest(
+            pending,
+            precisionRequest,
+            targetLanguage,
+            configuration,
+            normalizedTranslationUrl,
+            submittedInputs,
+          )
+        ) {
+          const result = {
+            status: "validation_error",
+            reason: "invalid_confirmation",
+            sourceRetained: true,
+          };
+          storeCurrentResult(request.taskId, result, "failed");
+          return result;
+        }
+        configuration.confirmedTranslationUrl = normalizedTranslationUrl;
+        configuration.confirmedPrecisionTranslationUrl = normalizedTranslationUrl;
+        plainStorage.setItem(SETTINGS_KEY, settings);
+      } else {
+        const confirmationToken = tokenFactory();
+        pendingConfirmations.set(confirmationToken, {
+          taskId: request.taskId,
+          sourceText: request.sourceText,
+          targetLanguage,
+          configurationId: configuration.id,
+          normalizedTranslationUrl,
+          inputsFingerprint: inputsFingerprint(submittedInputs),
+        });
+        const result = {
+          status: "confirmation_required",
+          sourceRetained: true,
+          confirmationToken,
+          preview: {
+            serviceName: configuration.name,
+            normalizedTranslationUrl,
+            protocol:
+              configuration.protocol === "responses"
+                ? "Responses"
+                : "Chat Completions",
+            model: configuration.model,
+            dataSent: [
+              "源文本",
+              "目标语言",
+              ...(input.domainProfile ? ["行业配置"] : []),
+              "命中的术语",
+              ...(input.referenceTranslations.length > 0 ? ["参考译例"] : []),
+              "附加翻译要求",
+              "分析、审校与必要的定向修订资料",
+            ],
+            qualityMode: "precision",
+            callCount: callPlan.maximumCallCount,
+            precisionCallPlan: callPlan,
+            ...(parallel ? { parallel } : {}),
+          },
+        };
+        storeCurrentResult(request.taskId, result, "awaiting_confirmation");
+        return result;
+      }
+    }
+
+    if (activeTask) activeTask.controller.abort();
+    const controller = new AbortController();
+    const task = {
+      taskId: request.taskId,
+      configurationId: configuration.id,
+      controller,
+    };
+    activeTask = task;
+    currentCopyCandidate = null;
+    const apiKey = apiKeyFor(configuration.id);
+    const thinkingEnabled =
+      configuration.type === "deepseek-official" && submittedInputs.thinkingEnabled;
+    const startedAt = now().getTime();
+    let firstOutputAt = null;
+    let taskTimedOut = false;
+    const taskTimeout = setTimeout(() => {
+      if (activeTask !== task) return;
+      taskTimedOut = true;
+      controller.abort();
+    }, TRANSLATION_TOTAL_TIMEOUT_MILLISECONDS);
+
+    function emitProgress(event) {
+      try {
+        onProgress(event);
+      } catch {
+        // Presentation observers cannot break a precision task.
+      }
+    }
+    function emitStage(stage) {
+      emitProgress({ type: "precision_stage", taskId: request.taskId, stage, callPlan });
+      updateCurrentTask(request.taskId, { phase: stage });
+    }
+    function noteFirstOutput(value) {
+      if (firstOutputAt === null && typeof value === "string" && value.length > 0) {
+        firstOutputAt = now().getTime();
+      }
+    }
+    async function sendOperation(operation, signal, countAsTranslation = false) {
+      if (activeTask !== task || signal.aborted || controller.signal.aborted) {
+        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
+      }
+      let sawData = false;
+      const response = await transport.request({
+        url: normalizedTranslationUrl,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          ...(configuration.authentication === "bearer"
+            ? { Authorization: `Bearer ${apiKey}` }
+            : {}),
+        },
+        body: operation.body,
+        signal,
+        onData(chunk) {
+          if (activeTask !== task || signal.aborted || controller.signal.aborted) return;
+          sawData = true;
+          operation.push(chunk);
+        },
+      });
+      if (activeTask !== task || signal.aborted || controller.signal.aborted) {
+        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
+      }
+      if (response.status < 200 || response.status >= 300) {
+        throw transportResponseError(response);
+      }
+      const output = operation.finish(response.body, sawData);
+      if (countAsTranslation) noteFirstOutput(output);
+      return output;
+    }
+    function createTranslationOperation(operationInput, onTextDelta) {
+      validatePromptContract("translationInput", operationInput);
+      const operation = createTranslationProtocolOperation({
+        configuration,
+        input: operationInput,
+        thinkingEnabled,
+        onTextDelta,
+      });
+      validateTranslationInputBudget({
+        input: operationInput,
+        serializedBody: operation.body,
+      });
+      return operation;
+    }
+    async function runStructured({ input: operationInput, inputContract, outputContract, prompt }) {
+      validatePromptContract(inputContract, operationInput);
+      const operation = createProtocolOperation({
+        configuration,
+        input: operationInput,
+        systemPrompt: prompt,
+        stream: false,
+        thinkingEnabled,
+      });
+      validateTranslationInputBudget({
+        input: operationInput,
+        serializedBody: operation.body,
+      });
+      const output = await sendOperation(operation, controller.signal, false);
+      return parseStructuredOutput(output, outputContract, { input: operationInput });
+    }
+    function precisionMetadata(patch = {}) {
+      return freezeDeep({
+        complete: false,
+        callPlan,
+        reviewIssues: [],
+        revisedSegmentIds: [],
+        unresolvedIssueIds: [],
+        ...patch,
+      });
+    }
+    function reviewRisk(issue, index) {
+      return {
+        id: `precision-review-${index + 1}`,
+        code: `precision.${issue.reviewRole}.${issue.type}`,
+        category: issue.type === "terminology" || issue.type === "terminology_form"
+          ? "terminology"
+          : "other",
+        severity: issue.severity,
+        certainty: "heuristic",
+        message: issue.suggestion || "精译审校发现需要人工复核的问题。",
+      };
+    }
+    function combinedQuality(translation, extraRisks = []) {
+      const quality = inspectTranslationQuality({
+        sourceText: request.sourceText,
+        translation,
+        streamCompleted: true,
+      });
+      const terminologyRisks = inspectTerminologyQuality({
+        translation,
+        matchedTerms: terminologyResolution.qualityTerms,
+      });
+      const risks = [...quality.risks, ...terminologyRisks, ...extraRisks];
+      return freezeDeep({
+        risks,
+        pasteBlocked:
+          quality.pasteBlocked ||
+          risks.some(
+            (risk) => risk.certainty === "deterministic" && risk.severity === "critical",
+          ),
+      });
+    }
+    function completeWith(translation, precision, extraRisks = [], segmentMergeRisks = []) {
+      const quality = combinedQuality(translation, [...segmentMergeRisks, ...extraRisks]);
+      currentCopyCandidate = {
+        taskId: request.taskId,
+        sourceText: request.sourceText,
+        translation,
+        pasteBlocked: quality.pasteBlocked,
+      };
+      const completedAt = now().getTime();
+      const completionMilliseconds = Math.max(1, completedAt - startedAt);
+      const outputCodePoints = countCodePoints(translation);
+      recordPerformanceSample(configuration.id, {
+        firstOutputMilliseconds: Math.max(
+          0,
+          (firstOutputAt === null ? completedAt : firstOutputAt) - startedAt,
+        ),
+        completionMilliseconds,
+        outputCodePoints,
+        averageOutputCodePointsPerSecond:
+          outputCodePoints / (completionMilliseconds / 1_000),
+        mode: parallel && parallel.applied ? "precision_parallel" : "precision",
+        segmentCount: callPlan.translationCalls,
+      });
+      emitProgress({
+        type: "finished",
+        taskId: request.taskId,
+        status: "completed",
+      });
+      const result = freezeDeep({
+        status: "completed",
+        taskId: request.taskId,
+        translation,
+        quality,
+        precision,
+        ...(parallel ? { parallel } : {}),
+      });
+      storeCurrentResult(request.taskId, result, "completed", translation);
+      return result;
+    }
+    function failStage(
+      stage,
+      error,
+      partialTranslation = "",
+      quality = null,
+      precisionPatch = {},
+    ) {
+      const code = taskTimedOut
+        ? "timeout"
+        : activeTask !== task || controller.signal.aborted
+          ? "cancelled"
+          : mapTransportError(error) === "unknown_error" && error && error.code === "protocol_error"
+            ? "protocol_error"
+            : mapTransportError(error);
+      emitProgress({
+        type: "finished",
+        taskId: request.taskId,
+        status: code === "cancelled" ? "cancelled" : "failed",
+      });
+      const result = freezeDeep({
+        status: "failed",
+        taskId: request.taskId,
+        sourceRetained: true,
+        ...(partialTranslation ? { partialTranslation } : {}),
+        ...(quality ? { quality } : {}),
+        ...(parallel ? { parallel } : {}),
+        precision: precisionMetadata({ ...precisionPatch, failedStage: stage }),
+        error: {
+          code,
+          message: safeTransportErrorMessage(error, code),
+          ...(error && Number.isInteger(error.httpStatus)
+            ? { httpStatus: error.httpStatus }
+            : {}),
+          ...(error && typeof error.requestId === "string"
+            ? { requestId: error.requestId }
+            : {}),
+        },
+      });
+      if (partialTranslation && quality) {
+        currentCopyCandidate = {
+          taskId: request.taskId,
+          sourceText: request.sourceText,
+          translation: partialTranslation,
+          pasteBlocked: quality.pasteBlocked,
+        };
+      }
+      storeCurrentResult(request.taskId, result, "failed", partialTranslation);
+      return result;
+    }
+
+    emitProgress({ type: "started", taskId: request.taskId });
+    emitProgress({ type: "precision_plan", taskId: request.taskId, callPlan });
+    if (parallel) {
+      emitProgress({ type: "parallel_plan", taskId: request.taskId, parallel });
+    }
+
+    let analysis;
+    const analysisProtectedItems = precisionSegments.flatMap(
+      (segment) => segmentTranslationInput(input, segment).protectedItems,
+    );
+    const analysisBase = {
+      ...baseTaskData(input),
+      protectedItems: analysisProtectedItems,
+    };
+    const analysisInput = {
+      ...analysisBase,
+      schemaVersion: "analysis-input.v1",
+      sourceText: input.sourceText,
+      segments: precisionSegments.map((segment) => ({
+        id: segment.id,
+        ordinal: segment.ordinal,
+        sourceStart: segment.sourceStart,
+        sourceEnd: segment.sourceEnd,
+      })),
+    };
+    try {
+      emitStage("analyzing");
+      analysis = await runStructured({
+        input: analysisInput,
+        inputContract: "analysisInput",
+        outputContract: "analysisOutput",
+        prompt: ANALYSIS_SYSTEM_PROMPT,
+      });
+    } catch (error) {
+      clearTimeout(taskTimeout);
+      const result = failStage("analysis", error);
+      if (activeTask === task) activeTask = null;
+      return result;
+    }
+
+    let initialTranslation = "";
+    let translatedSegments = [];
+    let segmentMergeRisks = [];
+    let fullDocumentOperation = null;
+    const segmentOperations = new Map();
+    try {
+      emitStage("translating");
+      if (parallel && parallel.applied) {
+        const output = createOutputAccumulator();
+        const completedByOrdinal = new Map();
+        let nextPublishedOrdinal = 0;
+        const segmentResults = await runSegmentPool({
+          segments: precisionSegments,
+          concurrency: parallel.concurrency,
+          signal: controller.signal,
+          async translate(segment, { signal }) {
+            const operationInput = segmentTranslationInput(
+              { ...input, qualityMode: "precision", analysis },
+              segment,
+            );
+            const operation = createTranslationOperation(operationInput, noteFirstOutput);
+            segmentOperations.set(segment.id, operation);
+            try {
+              const translation = await sendOperation(operation, signal, true);
+              return {
+                id: segment.id,
+                ordinal: segment.ordinal,
+                sourceStart: segment.sourceStart,
+                sourceEnd: segment.sourceEnd,
+                translation,
+              };
+            } catch (error) {
+              const partial = operation.partialTranslation();
+              if (partial) {
+                error.partialSegmentResult = {
+                  id: segment.id,
+                  ordinal: segment.ordinal,
+                  sourceStart: segment.sourceStart,
+                  sourceEnd: segment.sourceEnd,
+                  translation: partial,
+                };
+              }
+              throw error;
+            }
+          },
+          onSegmentStarted(_segment, progress) {
+            emitProgress({
+              type: "segment_progress",
+              taskId: request.taskId,
+              completed: progress.completed,
+              total: progress.total,
+              inFlight: progress.inFlight,
+              concurrency: parallel.concurrency,
+            });
+          },
+          onSegmentCompleted(result, progress) {
+            completedByOrdinal.set(result.ordinal, result.translation);
+            while (completedByOrdinal.has(nextPublishedOrdinal)) {
+              const delta = completedByOrdinal.get(nextPublishedOrdinal);
+              if (!output.append(delta)) {
+                throw outputLimitError(output.text());
+              }
+              emitProgress({ type: "text_delta", taskId: request.taskId, delta });
+              nextPublishedOrdinal += 1;
+            }
+            updateCurrentTask(request.taskId, {
+              phase: "translating",
+              partialTranslation: output.text(),
+              parallelProgress: {
+                ...progress,
+                concurrency: parallel.concurrency,
+                fallbackReason: parallel.fallbackReason,
+              },
+            });
+          },
+        });
+        const merged = mergeSegmentTranslations(precisionSegments, segmentResults);
+        if (countCodePoints(merged.translation) > OUTPUT_CODE_POINT_LIMIT) {
+          throw outputLimitError(
+            Array.from(merged.translation).slice(0, OUTPUT_CODE_POINT_LIMIT).join(""),
+          );
+        }
+        initialTranslation = merged.translation;
+        segmentMergeRisks = [...merged.risks];
+        const byId = new Map(segmentResults.map((result) => [result.id, result.translation]));
+        translatedSegments = precisionSegments.map((segment) => ({
+          ...segment,
+          translation: byId.get(segment.id),
+        }));
+      } else {
+        const operationInput = {
+          ...input,
+          qualityMode: "precision",
+          analysis,
+        };
+        fullDocumentOperation = createTranslationOperation(operationInput, (delta) => {
+          if (activeTask !== task || controller.signal.aborted) return;
+          noteFirstOutput(delta);
+          emitProgress({ type: "text_delta", taskId: request.taskId, delta });
+          const currentPartial =
+            currentTranslation && currentTranslation.task.taskId === request.taskId
+              ? currentTranslation.partialTranslation
+              : "";
+          updateCurrentTask(request.taskId, {
+            phase: "translating",
+            partialTranslation: currentPartial + delta,
+          });
+        });
+        initialTranslation = await sendOperation(
+          fullDocumentOperation,
+          controller.signal,
+          true,
+        );
+        translatedSegments = [
+          { ...precisionSegments[0], translation: initialTranslation },
+        ];
+      }
+    } catch (error) {
+      let partialTranslation = "";
+      if (parallel && parallel.applied) {
+        const partialMerge = mergeSegmentTranslations(
+          precisionSegments,
+          partialSegmentResultsFromError(error),
+        );
+        partialTranslation =
+          error && typeof error.partialTranslation === "string"
+            ? error.partialTranslation
+            : partialMerge.translation;
+      } else if (fullDocumentOperation) {
+        partialTranslation = fullDocumentOperation.partialTranslation();
+      }
+      const quality = partialTranslation
+        ? inspectTranslationQuality({
+            sourceText: request.sourceText,
+            translation: partialTranslation,
+            streamCompleted: false,
+          })
+        : null;
+      clearTimeout(taskTimeout);
+      const result = failStage("translation", error, partialTranslation, quality);
+      if (activeTask === task) activeTask = null;
+      return result;
+    }
+
+    const reviewSegments = translatedSegments.map((segment) => ({
+      id: segment.id,
+      ordinal: segment.ordinal,
+      sourceStart: segment.sourceStart,
+      sourceEnd: segment.sourceEnd,
+      source: segment.ownedSource,
+      translation: segment.translation,
+    }));
+    const accuracyInput = {
+      ...analysisBase,
+      schemaVersion: "accuracy-review-input.v1",
+      analysis,
+      segments: reviewSegments,
+    };
+    const languageInput = {
+      schemaVersion: "language-review-input.v1",
+      taskId: input.taskId,
+      targetLanguage: input.targetLanguage,
+      domainProfile: input.domainProfile,
+      matchedTerms: input.matchedTerms,
+      targetExamples: input.referenceTranslations.map((reference) => ({
+        id: reference.id,
+        targetLanguage: reference.targetLanguage,
+        domainProfileId: reference.domainProfileId,
+        translation: reference.translation,
+      })),
+      additionalRequirements: input.additionalRequirements,
+      translations: reviewSegments.map(({ source: _source, ...segment }) => segment),
+    };
+    emitStage("reviewing");
+    const reviewResults = await Promise.allSettled([
+      runStructured({
+        input: accuracyInput,
+        inputContract: "accuracyReviewInput",
+        outputContract: "accuracyReviewOutput",
+        prompt: ACCURACY_REVIEW_SYSTEM_PROMPT,
+      }),
+      runStructured({
+        input: languageInput,
+        inputContract: "languageReviewInput",
+        outputContract: "languageReviewOutput",
+        prompt: LANGUAGE_REVIEW_SYSTEM_PROMPT,
+      }),
+    ]);
+    if (reviewResults.some((result) => result.status === "rejected")) {
+      const failedIndex = reviewResults.findIndex((result) => result.status === "rejected");
+      const failedStage = failedIndex === 0 ? "accuracy_review" : "language_review";
+      const retainedReviewIssues = [
+        ...(reviewResults[0].status === "fulfilled"
+          ? reviewResults[0].value.issues.map((issue) => ({
+              reviewRole: "accuracy",
+              ...issue,
+              termId: null,
+            }))
+          : []),
+        ...(reviewResults[1].status === "fulfilled"
+          ? reviewResults[1].value.issues.map((issue) => ({
+              reviewRole: "language",
+              ...issue,
+              sourceRange: null,
+            }))
+          : []),
+      ];
+      const failedReview = reviewResults[failedIndex];
+      if (taskTimedOut || controller.signal.aborted || activeTask !== task) {
+        const quality = combinedQuality(initialTranslation, [
+          ...segmentMergeRisks,
+          ...retainedReviewIssues.map(reviewRisk),
+        ]);
+        clearTimeout(taskTimeout);
+        const result = failStage(
+          failedStage,
+          failedReview.reason,
+          initialTranslation,
+          quality,
+          { analysis, reviewIssues: retainedReviewIssues },
+        );
+        if (activeTask === task) activeTask = null;
+        return result;
+      }
+      const precision = precisionMetadata({
+        analysis,
+        failedStage,
+        reviewIssues: retainedReviewIssues,
+      });
+      const incompleteRisk = {
+        id: "precision-incomplete-review",
+        code: "precision.review_incomplete",
+        category: "other",
+        severity: "major",
+        certainty: "heuristic",
+        message: "精译审校未完成，当前保留初译，请人工复核。",
+      };
+      clearTimeout(taskTimeout);
+      if (activeTask === task) activeTask = null;
+      return completeWith(
+        initialTranslation,
+        precision,
+        [
+          incompleteRisk,
+          ...retainedReviewIssues.map(reviewRisk),
+        ],
+        segmentMergeRisks,
+      );
+    }
+
+    const accuracyOutput = reviewResults[0].value;
+    const languageOutput = reviewResults[1].value;
+    const reviewIssues = [
+      ...accuracyOutput.issues.map((issue) => ({
+        reviewRole: "accuracy",
+        ...issue,
+        termId: null,
+      })),
+      ...languageOutput.issues.map((issue) => ({
+        reviewRole: "language",
+        ...issue,
+        sourceRange: null,
+      })),
+    ];
+    if (new Set(reviewIssues.map((issue) => issue.id)).size !== reviewIssues.length) {
+      const precision = precisionMetadata({ analysis, failedStage: "reviews" });
+      const risk = {
+        id: "precision-duplicate-review-id",
+        code: "precision.review_id_conflict",
+        category: "other",
+        severity: "major",
+        certainty: "heuristic",
+        message: "两个审校结果使用了重复的问题 ID，精译未继续修订。",
+      };
+      clearTimeout(taskTimeout);
+      if (activeTask === task) activeTask = null;
+      return completeWith(initialTranslation, precision, [risk], segmentMergeRisks);
+    }
+    if (reviewIssues.length === 0) {
+      const precision = precisionMetadata({
+        complete: true,
+        analysis,
+      });
+      clearTimeout(taskTimeout);
+      if (activeTask === task) activeTask = null;
+      return completeWith(initialTranslation, precision, [], segmentMergeRisks);
+    }
+
+    const riskyIds = new Set(reviewIssues.map((issue) => issue.segmentId));
+    const riskySegments = translatedSegments
+      .filter((segment) => riskyIds.has(segment.id))
+      .map((segment) => {
+        const index = translatedSegments.findIndex((candidate) => candidate.id === segment.id);
+        const previous = translatedSegments[index - 1];
+        const next = translatedSegments[index + 1];
+        return {
+          id: segment.id,
+          ordinal: segment.ordinal,
+          sourceStart: segment.sourceStart,
+          sourceEnd: segment.sourceEnd,
+          sourceContextBefore: segment.sourceContextBefore,
+          source: segment.ownedSource,
+          sourceContextAfter: segment.sourceContextAfter,
+          targetContextBefore: previous
+            ? Array.from(previous.translation).slice(-2_000).join("")
+            : "",
+          currentTranslation: segment.translation,
+          targetContextAfter: next
+            ? Array.from(next.translation).slice(0, 2_000).join("")
+            : "",
+        };
+      });
+    const revisionInput = {
+      ...analysisBase,
+      protectedItems: analysisBase.protectedItems.filter((item) =>
+        riskyIds.has(item.segmentId),
+      ),
+      schemaVersion: "revision-input.v1",
+      analysis,
+      segments: riskySegments,
+      issues: reviewIssues,
+    };
+    let revisionOutput;
+    try {
+      emitStage("revising");
+      revisionOutput = await runStructured({
+        input: revisionInput,
+        inputContract: "revisionInput",
+        outputContract: "revisionOutput",
+        prompt: REVISION_SYSTEM_PROMPT,
+      });
+    } catch (error) {
+      if (taskTimedOut || controller.signal.aborted || activeTask !== task) {
+        const quality = combinedQuality(initialTranslation, [
+          ...segmentMergeRisks,
+          ...reviewIssues.map(reviewRisk),
+        ]);
+        clearTimeout(taskTimeout);
+        const result = failStage(
+          "revision",
+          error,
+          initialTranslation,
+          quality,
+          {
+            analysis,
+            reviewIssues,
+            unresolvedIssueIds: reviewIssues.map((issue) => issue.id),
+          },
+        );
+        if (activeTask === task) activeTask = null;
+        return result;
+      }
+      const precision = precisionMetadata({
+        analysis,
+        failedStage: "revision",
+        reviewIssues,
+        unresolvedIssueIds: reviewIssues.map((issue) => issue.id),
+      });
+      const risks = reviewIssues.map(reviewRisk);
+      clearTimeout(taskTimeout);
+      if (activeTask === task) activeTask = null;
+      return completeWith(initialTranslation, precision, risks, segmentMergeRisks);
+    }
+
+    const replacements = new Map(
+      revisionOutput.revisions.map((revision) => [revision.segmentId, revision.replacement]),
+    );
+    const finalTranslation = translatedSegments
+      .map((segment) =>
+        replacements.has(segment.id) ? replacements.get(segment.id) : segment.translation,
+      )
+      .join("");
+    if (countCodePoints(finalTranslation) > OUTPUT_CODE_POINT_LIMIT) {
+      const precision = precisionMetadata({
+        analysis,
+        failedStage: "revision",
+        reviewIssues,
+        unresolvedIssueIds: reviewIssues.map((issue) => issue.id),
+      });
+      const risks = [
+        ...reviewIssues.map(reviewRisk),
+        {
+          id: "precision-revision-output-limit",
+          code: "precision.revision_output_too_large",
+          category: "output_contract",
+          severity: "major",
+          certainty: "deterministic",
+          message: "修订结果超过输出长度限制，已保留初译。",
+        },
+      ];
+      clearTimeout(taskTimeout);
+      if (activeTask === task) activeTask = null;
+      return completeWith(initialTranslation, precision, risks, segmentMergeRisks);
+    }
+    const unresolvedSet = new Set(revisionOutput.unresolvedIssueIds);
+    const unresolvedIssues = reviewIssues.filter((issue) => unresolvedSet.has(issue.id));
+    const precision = precisionMetadata({
+      complete: true,
+      analysis,
+      reviewIssues,
+      revisedSegmentIds: revisionOutput.revisions.map((revision) => revision.segmentId),
+      unresolvedIssueIds: revisionOutput.unresolvedIssueIds,
+    });
+    clearTimeout(taskTimeout);
+    if (activeTask === task) activeTask = null;
+    return completeWith(
+      finalTranslation,
+      precision,
+      unresolvedIssues.map(reviewRisk),
+      segmentMergeRisks,
+    );
+  }
+
   async function startStandardTranslation(request, onProgress = () => undefined) {
+    request = { ...request, qualityMode: "standard", thinkingEnabled: false };
     if (
       !request ||
       typeof request.sourceText !== "string" ||
@@ -1850,6 +2982,7 @@ function createRuyiRuntime({
       }
     }
     function createOperation(operationInput, onTextDelta) {
+      validatePromptContract("translationInput", operationInput);
       const operation = createTranslationProtocolOperation({
         configuration,
         input: operationInput,
@@ -1862,6 +2995,9 @@ function createRuyiRuntime({
       return operation;
     }
     async function sendOperation(operation, signal) {
+      if (activeTask !== task || signal.aborted || controller.signal.aborted) {
+        throw Object.assign(new Error("请求已取消。"), { code: "cancelled" });
+      }
       let sawData = false;
       const response = await transport.request({
         url: normalizedTranslationUrl,
@@ -1939,14 +3075,20 @@ function createRuyiRuntime({
         storeCurrentResult(request.taskId, result, "failed");
         return result;
       }
+      const code = mapTransportError(error) === "protocol_error"
+        ? "protocol_error"
+        : "configuration_error";
       const result = {
         status: "failed",
         taskId: request.taskId,
         sourceRetained: true,
         ...(parallel ? { parallel } : {}),
         error: {
-          code: "configuration_error",
-          message: errorMessage("configuration_error"),
+          code,
+          message:
+            code === "protocol_error"
+              ? "翻译任务不符合提示词契约。"
+              : errorMessage("configuration_error"),
         },
       };
       storeCurrentResult(request.taskId, result, "failed");
@@ -2140,15 +3282,9 @@ function createRuyiRuntime({
       let partialTranslation = "";
       let incompleteSegmentRisks = [];
       if (parallel && parallel.applied) {
-        const partialResults = Array.isArray(error && error.segmentResults)
-          ? [...error.segmentResults]
-          : [];
-        if (error && error.partialSegmentResult) {
-          partialResults.push(error.partialSegmentResult);
-        }
         const partialMerge = mergeSegmentTranslations(
           translationPlan.segments,
-          partialResults,
+          partialSegmentResultsFromError(error),
         );
         partialTranslation =
           error && typeof error.partialTranslation === "string"
@@ -2240,6 +3376,12 @@ function createRuyiRuntime({
       if (taskTimeout !== null) clearTimeout(taskTimeout);
       if (activeTask === task) activeTask = null;
     }
+  }
+
+  async function startTranslation(request, onProgress = () => undefined) {
+    return request && request.qualityMode === "precision"
+      ? startPrecisionTranslation(request, onProgress)
+      : startStandardTranslation(request, onProgress);
   }
 
   function cancelTranslation(taskId) {
@@ -2360,11 +3502,14 @@ function createRuyiRuntime({
     saveServiceApiKey,
     deleteServiceApiKey,
     clearServicePerformanceData,
+    setServiceThinkingMode,
     getParallelAccelerationAdvice,
+    getTranslationCallPlan,
     testServiceConnection,
     fetchServiceModels,
     cancelServiceOperation,
     saveApiKey,
+    startTranslation,
     startStandardTranslation,
     cancelTranslation,
     copyTranslation,

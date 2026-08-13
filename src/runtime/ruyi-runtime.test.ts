@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import type { TranslationProgressEvent } from "./contracts";
+
 const require = createRequire(import.meta.url);
 const runtimePath = resolve(
   import.meta.dirname,
@@ -500,6 +502,86 @@ describe("Ruyi runtime", () => {
     expect(runtime.pasteTranslation("task-send", "edited source")).toEqual({
       status: "unavailable",
     });
+  });
+
+  it("validates the standard prompt contract before transport", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = { request: vi.fn() };
+    const runtime = createRuyiRuntime({
+      plainStorage,
+      cryptoStorage,
+      transport,
+      servicePreset: {
+        id: "local-contract",
+        name: "本地模型",
+        type: "custom",
+        protocol: "chat-completions",
+        translationUrl: "http://127.0.0.1:11434/v1/chat/completions",
+        modelListUrl: "http://127.0.0.1:11434/v1/models",
+        authentication: "none",
+        model: "fixture-model",
+        stream: false,
+        confirmedTranslationUrl: "http://127.0.0.1:11434/v1/chat/completions",
+      },
+    });
+
+    const result = await runtime.startStandardTranslation({
+      taskId: "invalid task id",
+      sourceText: "Hello",
+      targetLanguage: {
+        kind: "preset",
+        id: "zh-CN",
+        modelLabel: "Simplified Chinese",
+      },
+    });
+
+    expect(result).toMatchObject({ status: "failed", error: { code: "protocol_error" } });
+    expect(transport.request).not.toHaveBeenCalled();
+  });
+
+  it("does not call the standard transport after cancellation in the started callback", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const plainStorage = memoryStorage();
+    const cryptoStorage = memoryStorage();
+    const transport = { request: vi.fn() };
+    const runtime = createRuyiRuntime({
+      plainStorage,
+      cryptoStorage,
+      transport,
+      servicePreset: {
+        id: "local-cancel-boundary",
+        name: "本地模型",
+        type: "custom",
+        protocol: "chat-completions",
+        translationUrl: "http://127.0.0.1:11434/v1/chat/completions",
+        modelListUrl: "http://127.0.0.1:11434/v1/models",
+        authentication: "none",
+        model: "fixture-model",
+        stream: false,
+        confirmedTranslationUrl: "http://127.0.0.1:11434/v1/chat/completions",
+      },
+    });
+    const taskId = "standard-cancel-stage-boundary";
+
+    const result = await runtime.startStandardTranslation(
+      {
+        taskId,
+        sourceText: "Hello",
+        targetLanguage: {
+          kind: "preset",
+          id: "zh-CN",
+          modelLabel: "Simplified Chinese",
+        },
+      },
+      (event: TranslationProgressEvent) => {
+        if (event.type === "started") runtime.cancelTranslation(taskId);
+      },
+    );
+
+    expect(result).toMatchObject({ status: "failed", error: { code: "cancelled" } });
+    expect(transport.request).not.toHaveBeenCalled();
   });
 
   it("keeps a translation and reports concrete protected-content risks", async () => {

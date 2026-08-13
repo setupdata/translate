@@ -19,6 +19,7 @@ export const configuredRuntimeState: RuntimeConfigurationState = {
     cachedModels: [],
     modelsFetchedAt: null,
     performanceSummary: null,
+    thinkingEnabled: false,
   },
   defaults: {
     targetLanguage: {
@@ -35,7 +36,7 @@ export const configuredRuntimeState: RuntimeConfigurationState = {
 export function createRuntimeStub(
   overrides: Partial<RuyiRuntimeBridge> = {},
 ): RuyiRuntimeBridge {
-  return {
+  const stub: RuyiRuntimeBridge = {
     getTerminologyState: async () => ({
       termbases: [],
       domainProfiles: [],
@@ -142,6 +143,12 @@ export function createRuntimeStub(
       currentServiceConfigurationId: "deepseek-flash",
       serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
     }),
+    setServiceThinkingMode: async (_configurationId, enabled) => ({
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [
+        { ...configuredRuntimeState.serviceConfiguration!, thinkingEnabled: enabled },
+      ],
+    }),
     getParallelAccelerationAdvice: (sourceText) => ({
       suggested: Array.from(sourceText.replace(/\r\n/gu, "\n")).length > 4_000,
       estimatedSeconds: null,
@@ -149,6 +156,15 @@ export function createRuntimeStub(
         Array.from(sourceText.replace(/\r\n/gu, "\n")).length > 4_000
           ? "no_samples_long_source"
           : null,
+    }),
+    getTranslationCallPlan: ({ qualityMode = "standard" } = {}) => ({
+      qualityMode: qualityMode === "precision" ? "precision" as const : "standard" as const,
+      translationCalls: 1,
+      maximumCallCount: qualityMode === "precision" ? 5 : 1,
+      segmentCount: 1,
+      ...(qualityMode === "precision"
+        ? { analysisCalls: 1, reviewCalls: 2, maximumRevisionCalls: 1 }
+        : {}),
     }),
     testServiceConnection: async () => ({ status: "completed" }),
     fetchServiceModels: async () => ({
@@ -160,6 +176,12 @@ export function createRuntimeStub(
     cancelServiceOperation: () => undefined,
     saveApiKey: async () => configuredRuntimeState,
     startStandardTranslation: async (request) => ({
+      status: "completed",
+      taskId: request.taskId,
+      translation: "译文",
+      quality: { risks: [], pasteBlocked: false },
+    }),
+    startTranslation: async (request) => ({
       status: "completed",
       taskId: request.taskId,
       translation: "译文",
@@ -183,4 +205,11 @@ export function createRuntimeStub(
     clearCurrentTranslation: () => undefined,
     ...overrides,
   };
+  if (
+    overrides.startStandardTranslation &&
+    !Object.prototype.hasOwnProperty.call(overrides, "startTranslation")
+  ) {
+    stub.startTranslation = overrides.startStandardTranslation;
+  }
+  return stub;
 }

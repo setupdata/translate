@@ -20,7 +20,10 @@ export type ServiceConfigurationView = {
   cachedModels: string[];
   modelsFetchedAt: string | null;
   performanceSummary: ServicePerformanceSummary | null;
+  thinkingEnabled?: boolean;
 };
+
+export type TranslationQualityMode = "standard" | "precision";
 
 export type ServicePerformanceSummary = {
   sampleCount: number;
@@ -56,7 +59,7 @@ export type RuntimeConfigurationState = {
   serviceConfiguration: ServiceConfigurationView | null;
   defaults: {
     targetLanguage: TargetLanguage & { displayName: string };
-    qualityMode: "standard";
+    qualityMode: TranslationQualityMode;
     additionalRequirements: string;
   };
 };
@@ -74,6 +77,27 @@ export type StandardTranslationRequest = {
   confirmationToken?: string;
   parallelAcceleration?: boolean;
   parallelConcurrency?: number;
+  qualityMode?: TranslationQualityMode;
+  thinkingEnabled?: boolean;
+};
+
+export type TranslationCallPlan = {
+  qualityMode: TranslationQualityMode;
+  translationCalls: number;
+  maximumCallCount: number;
+  segmentCount: number;
+  analysisCalls?: number;
+  reviewCalls?: number;
+  maximumRevisionCalls?: number;
+};
+
+export type PrecisionCallPlan = {
+  analysisCalls: 1;
+  translationCalls: number;
+  reviewCalls: 2;
+  maximumRevisionCalls: 1;
+  maximumCallCount: number;
+  segmentCount: number;
 };
 
 export type TaskTerm = {
@@ -212,6 +236,17 @@ export type TranslationProgressEvent =
   | { type: "started"; taskId: string }
   | { type: "text_delta"; taskId: string; delta: string }
   | {
+      type: "precision_plan";
+      taskId: string;
+      callPlan: PrecisionCallPlan;
+    }
+  | {
+      type: "precision_stage";
+      taskId: string;
+      stage: "analyzing" | "translating" | "reviewing" | "revising";
+      callPlan: PrecisionCallPlan;
+    }
+  | {
       type: "parallel_plan";
       taskId: string;
       parallel: ParallelTranslationSummary;
@@ -271,6 +306,54 @@ export type TranslationHostActionResult =
   | { status: "copied" | "pasted" }
   | { status: "confirmation_required" | "blocked" | "unavailable" };
 
+export type PrecisionAnalysis = {
+  schemaVersion: "analysis-output.v1";
+  taskId: string;
+  detectedSourceLanguage: string;
+  inferredDomain: { name: string | null; confidence: "low" | "medium" | "high" };
+  documentType: string | null;
+  audience: string | null;
+  tone: string | null;
+  ambiguities: Array<{
+    segmentId: string;
+    sourceRange: { start: number; end: number };
+    category: string;
+    note: string;
+  }>;
+  termApplicability: Array<{ termId: string; applies: boolean; note: string }>;
+  risks: Array<{ segmentId: string | null; category: string; note: string }>;
+};
+
+export type PrecisionReviewIssue = {
+  reviewRole: "accuracy" | "language";
+  id: string;
+  segmentId: string;
+  type: string;
+  severity: "critical" | "major" | "minor";
+  sourceRange: { start: number; end: number } | null;
+  translationRange: { start: number; end: number } | null;
+  termId: string | null;
+  suggestion: string;
+  confidence: "low" | "medium" | "high";
+};
+
+export type PrecisionTranslationSummary = {
+  complete: boolean;
+  callPlan: PrecisionCallPlan;
+  analysis?: PrecisionAnalysis;
+  failedStage?:
+    | "preparing"
+    | "analysis"
+    | "translation"
+    | "accuracy_review"
+    | "language_review"
+    | "reviews"
+    | "revision";
+  reviewIssues: PrecisionReviewIssue[];
+  revisedSegmentIds: string[];
+  unresolvedIssueIds: string[];
+};
+
 export type StandardTranslationResult =
   | {
       status: "validation_error";
@@ -313,6 +396,8 @@ export type StandardTranslationResult =
         model: string;
         dataSent: string[];
         callCount: number;
+        qualityMode?: TranslationQualityMode;
+        precisionCallPlan?: PrecisionCallPlan;
         parallel?: ParallelTranslationSummary;
       };
     }
@@ -322,6 +407,7 @@ export type StandardTranslationResult =
       translation: string;
       quality: TranslationQuality;
       parallel?: ParallelTranslationSummary;
+      precision?: PrecisionTranslationSummary;
     }
   | {
       status: "failed";
@@ -330,6 +416,7 @@ export type StandardTranslationResult =
       partialTranslation?: string;
       quality?: TranslationQuality;
       parallel?: ParallelTranslationSummary;
+      precision?: PrecisionTranslationSummary;
       error: {
         code: StableTranslationErrorCode;
         message: string;
@@ -343,7 +430,8 @@ export type CurrentTranslationInputs = {
   targetLanguage: TargetLanguage;
   serviceConfigurationId: string | null;
   domainProfileId: string | null;
-  qualityMode: "standard";
+  qualityMode: TranslationQualityMode;
+  thinkingEnabled?: boolean;
   additionalRequirements: string;
   taskTerms: TaskTerm[];
   referenceTranslationIds: string[] | null;
@@ -358,7 +446,10 @@ export type CurrentTranslationSnapshot = {
     | "preparing"
     | "needs_configuration"
     | "awaiting_confirmation"
+    | "analyzing"
     | "translating"
+    | "reviewing"
+    | "revising"
     | "completed"
     | "failed";
   inputs: CurrentTranslationInputs;
@@ -414,10 +505,20 @@ export interface RuyiRuntimeBridge {
   ): Promise<ServiceConfigurationsState>;
   deleteServiceApiKey(configurationId: string): Promise<ServiceConfigurationsState>;
   clearServicePerformanceData(configurationId: string): Promise<ServiceConfigurationsState>;
+  setServiceThinkingMode?(
+    configurationId: string,
+    enabled: boolean,
+  ): Promise<ServiceConfigurationsState>;
   getParallelAccelerationAdvice(
     sourceText: string,
     configurationId?: string,
   ): ParallelAccelerationAdvice;
+  getTranslationCallPlan?(request?: {
+    sourceText?: string;
+    qualityMode?: TranslationQualityMode;
+    parallelAcceleration?: boolean;
+    parallelConcurrency?: number;
+  }): TranslationCallPlan;
   testServiceConnection(request: {
     operationId: string;
     configurationId: string;
@@ -428,6 +529,10 @@ export interface RuyiRuntimeBridge {
   }): Promise<ModelListResult>;
   cancelServiceOperation(operationId: string): void;
   saveApiKey(credentialForm: HTMLFormElement): Promise<RuntimeConfigurationState>;
+  startTranslation?(
+    request: StandardTranslationRequest,
+    onProgress?: (event: TranslationProgressEvent) => void,
+  ): Promise<StandardTranslationResult>;
   startStandardTranslation(
     request: StandardTranslationRequest,
     onProgress?: (event: TranslationProgressEvent) => void,
