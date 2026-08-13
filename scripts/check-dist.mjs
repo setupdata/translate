@@ -15,7 +15,7 @@ const requiredFiles = [
   "index.html",
   "plugin.json",
   "preload.js",
-  "logo.svg",
+  "logo.png",
   "lib/node-chat-transport.cjs",
   "lib/chat-sse-parser.cjs",
   "lib/prompt-contracts.cjs",
@@ -122,9 +122,19 @@ if (mainPath !== resolve(distDirectory, "index.html")) {
 }
 if (
   preloadPath !== resolve(distDirectory, "preload.js") ||
-  logoPath !== resolve(distDirectory, "logo.svg")
+  logoPath !== resolve(distDirectory, "logo.png")
 ) {
-  throw new Error("plugin.json 必须引用包内的 preload.js 和 logo.svg。");
+  throw new Error("plugin.json 必须引用包内的 preload.js 和 logo.png。");
+}
+const logoBytes = await readFile(logoPath);
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+if (
+  logoBytes.length < 24 ||
+  !logoBytes.subarray(0, pngSignature.length).equals(pngSignature) ||
+  logoBytes.readUInt32BE(16) !== 256 ||
+  logoBytes.readUInt32BE(20) !== 256
+) {
+  throw new Error("logo.png 必须是 256×256 的有效 PNG 图片。");
 }
 if (!Array.isArray(manifest.features)) {
   throw new Error("plugin.json 缺少 features。");

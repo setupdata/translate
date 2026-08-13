@@ -6,7 +6,7 @@ describe("plugin.json", () => {
   it("declares the files uTools needs in development and production", () => {
     expect(pluginManifest).toMatchObject({
       main: "index.html",
-      logo: "logo.svg",
+      logo: "logo.png",
       preload: "preload.js",
       development: { main: "http://127.0.0.1:5173/index.html" },
     });
