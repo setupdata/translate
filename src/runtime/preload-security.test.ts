@@ -89,6 +89,7 @@ describe("preload storage boundary", () => {
         "saveDomainProfile",
         "saveReferenceTranslation",
         "saveTermbase",
+        "resetAllSettings",
         "setCurrentServiceConfiguration",
         "setCurrentDomainProfile",
         "setBackgroundNotificationsEnabled",

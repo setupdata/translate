@@ -64,10 +64,16 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [connectionOperationId, setConnectionOperationId] = useState<string | null>(null);
   const [modelOperationId, setModelOperationId] = useState<string | null>(null);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetMessage, setResetMessage] = useState("");
+  const [terminologyRevision, setTerminologyRevision] = useState(0);
   const operationSequence = useRef(0);
   const activeOperations = useRef(new Set<string>());
   const deleteDialogCancelButton = useRef<HTMLButtonElement>(null);
   const deleteDialogTrigger = useRef<HTMLButtonElement | null>(null);
+  const resetDialogCancelButton = useRef<HTMLButtonElement>(null);
+  const resetDialogTrigger = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -101,6 +107,19 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [pendingDeleteId]);
+
+  useEffect(() => {
+    if (!resetDialogOpen) return;
+    resetDialogCancelButton.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || resetting) return;
+      event.preventDefault();
+      setResetDialogOpen(false);
+      resetDialogTrigger.current?.focus();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [resetDialogOpen, resetting]);
 
   function nextOperationId(kind: "connection" | "models") {
     operationSequence.current += 1;
@@ -179,6 +198,32 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     setConnectionMessage("");
     setModelMessage("");
     setError("");
+  }
+
+  async function resetAllSettings() {
+    setResetting(true);
+    setError("");
+    setResetMessage("");
+    try {
+      if (!runtime.resetAllSettings) {
+        throw new Error("当前插件版本不支持恢复所有设置，请更新后重试。");
+      }
+      cancelActiveServiceOperations();
+      const next = await runtime.resetAllSettings(true);
+      setState(next);
+      setEditing(null);
+      setPendingDeleteId(null);
+      setResetDialogOpen(false);
+      resetDialogTrigger.current?.focus();
+      setTerminologyRevision((revision) => revision + 1);
+      setResetMessage(
+        "已恢复所有设置，已重新建立空密钥 DeepSeek Flash 预设，请重新编辑 API Key。",
+      );
+    } catch (resetError) {
+      setError(safeErrorMessage(resetError));
+    } finally {
+      setResetting(false);
+    }
   }
 
   function startNewConfiguration(input: ServiceConfigurationInput) {
@@ -296,6 +341,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
             <p>每项配置绑定一个模型。模型列表只会在你点击获取时联网。</p>
           </div>
           <button
+            disabled={Boolean(state?.storageIssue)}
             type="button"
             onClick={() => startNewConfiguration(emptyCustomConfiguration())}
           >
@@ -304,6 +350,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
         </div>
 
         {error && <p role="alert">{error}</p>}
+        {state?.storageIssue && <p role="alert">{state.storageIssue.message}</p>}
         {!state && !error && <p role="status">正在读取服务配置…</p>}
         {state && state.serviceConfigurations.length === 0 && (
           <div className="configuration-card first-configuration-card">
@@ -313,12 +360,14 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
             </p>
             <div className="compact-actions">
               <button
+                disabled={Boolean(state.storageIssue)}
                 type="button"
                 onClick={() => startNewConfiguration(emptyOfficialConfiguration())}
               >
                 添加 DeepSeek 官方配置
               </button>
               <button
+                disabled={Boolean(state.storageIssue)}
                 type="button"
                 onClick={() => startNewConfiguration(emptyCustomConfiguration())}
               >
@@ -342,6 +391,9 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                       {" · "}
                       {configuration.model}
                     </p>
+                    {configuration.disabled && (
+                      <p role="alert">{configuration.migrationError}</p>
+                    )}
                     <p>
                       {configuration.authentication === "none"
                         ? "不鉴权"
@@ -361,13 +413,14 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                     ) : (
                       <p className="service-performance-summary">暂无本地性能样本。</p>
                     )}
-                    {current && <strong>当前使用</strong>}
+                    {current && !configuration.disabled && <strong>当前使用</strong>}
                   </div>
                   <div className="compact-actions">
                     {!current && (
                       <button
                         aria-label={`设为当前 ${configuration.name}`}
                         type="button"
+                        disabled={configuration.disabled}
                         onClick={() =>
                           void runMutation(() =>
                             runtime.setCurrentServiceConfiguration(configuration.id),
@@ -378,15 +431,17 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                       </button>
                     )}
                     <button
-                      aria-label={`编辑 ${configuration.name}`}
+                      aria-label={`${configuration.disabled ? "重新编辑" : "编辑"} ${configuration.name}`}
+                      disabled={configuration.disabled && !configuration.repairable}
                       type="button"
                       onClick={() => edit(configuration.id)}
                     >
-                      编辑
+                      {configuration.disabled ? "重新编辑" : "编辑"}
                     </button>
                     <button
                       aria-label={`复制 ${configuration.name}`}
                       type="button"
+                      disabled={configuration.disabled}
                       onClick={() =>
                         void runMutation(() =>
                           runtime.duplicateServiceConfiguration(configuration.id),
@@ -398,7 +453,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                     <button
                       aria-label={`上移 ${configuration.name}`}
                       type="button"
-                      disabled={index === 0}
+                      disabled={configuration.disabled || index === 0}
                       onClick={() =>
                         void runMutation(() =>
                           runtime.moveServiceConfiguration(configuration.id, "up"),
@@ -410,7 +465,10 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                     <button
                       aria-label={`下移 ${configuration.name}`}
                       type="button"
-                      disabled={index === state.serviceConfigurations.length - 1}
+                      disabled={
+                        configuration.disabled ||
+                        index === state.serviceConfigurations.length - 1
+                      }
                       onClick={() =>
                         void runMutation(() =>
                           runtime.moveServiceConfiguration(configuration.id, "down"),
@@ -422,7 +480,9 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                     <button
                       aria-label={`清除 ${configuration.name} 的性能数据`}
                       type="button"
-                      disabled={!configuration.performanceSummary}
+                      disabled={
+                        configuration.disabled || !configuration.performanceSummary
+                      }
                       onClick={() =>
                         void runMutation(() =>
                           runtime.clearServicePerformanceData(configuration.id),
@@ -433,6 +493,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                     </button>
                     <button
                       aria-label={`删除 ${configuration.name}`}
+                      disabled={configuration.disabled}
                       type="button"
                       onClick={(event) => {
                         deleteDialogTrigger.current = event.currentTarget;
@@ -452,7 +513,13 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
       {editing && (
         <section className="configuration-card" aria-labelledby="configuration-editor-heading">
           <h2 id="configuration-editor-heading">
-            {editing.id ? "编辑服务配置" : "新增服务配置"}
+            {editing.id
+              ? state?.serviceConfigurations.find(
+                    (configuration) => configuration.id === editing.id,
+                  )?.disabled
+                ? "重新编辑服务配置"
+                : "编辑服务配置"
+              : "新增服务配置"}
           </h2>
           <form onSubmit={(event) => void save(event)}>
             <label htmlFor="configuration-name">配置名称</label>
@@ -664,7 +731,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
         <label className="checkbox-label">
           <input
             checked={state?.backgroundNotificationsEnabled !== false}
-            disabled={!state}
+            disabled={!state || Boolean(state.storageIssue)}
             type="checkbox"
             onChange={(event) =>
               void runMutation(() =>
@@ -682,7 +749,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
         </p>
       </section>
 
-      <TerminologySettingsSection runtime={runtime} />
+      <TerminologySettingsSection key={terminologyRevision} runtime={runtime} />
 
       <section
         aria-labelledby="privacy-notice-heading"
@@ -690,20 +757,38 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
       >
         <h2 id="privacy-notice-heading">隐私与数据说明</h2>
         <p>
-          插件使用你选择的服务配置直接连接模型服务。翻译时，源文本和本次任务资料会离开设备；服务可用性、数据保留、费用和限流由相应服务提供方决定。
+          插件没有自有中转服务，而是使用你选择的服务配置直接连接模型服务。翻译时，源文本、命中术语、选中的参考译例、行业配置和附加要求会离开设备；精译模式会向同一服务发起多次调用。服务可用性、数据处理与保留、费用和限流由相应服务提供方决定。
         </p>
         <p>
           API Key 使用 uTools 的 dbCryptoStorage 在本机加密保存，页面不会回填完整密钥，但客户端密钥仍可能被本机高权限程序或调试手段提取。
         </p>
         <p>
-          服务配置名称、地址、协议、模型和模型列表缓存在本地数据库中；API Key、术语库和行业配置使用加密存储。开启 uTools 数据同步后，这些数据可能形成远端或其他设备副本。
+          服务配置名称、地址、协议、模型、模型列表缓存、默认目标语言、默认质量模式和默认附加要求保存在本地数据库中；API Key、术语库、行业配置和参考译例使用 dbCryptoStorage 加密存储。uTools 没有保证加密存储一定排除数据同步，开启同步后，这些数据可能形成远端或其他设备副本。
         </p>
         <p>
           最近请求的汇总性能数据只记录首个输出时间、完成耗时、输出码点数、平均速度、翻译方式和分段数，不含源文本、译文、用户标识或单次请求日志，也不会发送给模型服务。它只用于等待提示，可在每项配置中清除；若已开启上述同步功能，仍可能形成同步副本。
         </p>
         <p>
-          可用每项配置的“删除”按钮删除该配置、API Key 和模型列表缓存，也可在编辑配置时单独“删除 API Key”。已同步的副本还需在 uTools 的同步数据管理中处理；删除本地数据不能删除模型服务已经保留的请求内容。
+          当前翻译只保留在插件进程内存中，不写入本地数据库、文件或日志；结束进程后无法恢复。可用每项配置的“删除”按钮删除该配置、API Key 和模型列表缓存，也可在编辑配置时单独“删除 API Key”。已同步的副本仍需在 uTools 的同步数据管理中另行处理。删除本地数据不能删除模型服务已经保留的请求内容，也不能保证删除 uTools 已同步到远端或其他设备的副本。
         </p>
+      </section>
+
+      <section aria-labelledby="data-management-heading" className="configuration-card">
+        <h2 id="data-management-heading">数据管理</h2>
+        <p>
+          恢复所有设置会取消当前任务，并删除插件能够控制的本地配置与加密数据。此操作不可撤销。
+        </p>
+        {resetMessage && <p role="status">{resetMessage}</p>}
+        <button
+          ref={resetDialogTrigger}
+          type="button"
+          onClick={() => {
+            setResetMessage("");
+            setResetDialogOpen(true);
+          }}
+        >
+          恢复所有设置
+        </button>
       </section>
 
       {pendingDelete && (
@@ -740,6 +825,43 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
               }}
             >
               确认删除
+            </button>
+          </div>
+        </section>
+      )}
+      {resetDialogOpen && (
+        <section
+          aria-labelledby="reset-all-settings-heading"
+          aria-modal="true"
+          className="confirmation-card"
+          role="dialog"
+        >
+          <h2 id="reset-all-settings-heading">确认恢复所有设置</h2>
+          <p>
+            此操作会删除所有服务配置和 API Key、模型列表缓存、连接确认、性能数据、通知和默认设置、术语库、行业配置和参考译例，并清除当前翻译、取消在途任务。
+          </p>
+          <p>
+            完成后只会重新建立一个未配置 API Key 的 DeepSeek Flash 预设。此操作不能保证删除 uTools 已同步到远端或其他设备的副本，也不能删除模型服务已经保留的数据。
+          </p>
+          <div className="dialog-actions">
+            <button
+              aria-label="取消恢复"
+              disabled={resetting}
+              ref={resetDialogCancelButton}
+              type="button"
+              onClick={() => {
+                setResetDialogOpen(false);
+                resetDialogTrigger.current?.focus();
+              }}
+            >
+              取消
+            </button>
+            <button
+              disabled={resetting}
+              type="button"
+              onClick={() => void resetAllSettings()}
+            >
+              {resetting ? "正在恢复…" : "确认恢复并删除"}
             </button>
           </div>
         </section>

@@ -84,6 +84,9 @@ describe("Service configuration management", () => {
       hasApiKey: true,
       maskedApiKey: "••••••••1234",
     });
+    expect(plainStorage.values.get("ruyi.settings.v1")).toMatchObject({
+      apiKeyConfigurationIds: ["custom-one"],
+    });
 
     state = await runtime.duplicateServiceConfiguration("custom-one");
     expect(state.currentServiceConfigurationId).toBe("custom-copy");
@@ -125,6 +128,9 @@ describe("Service configuration management", () => {
       "custom-copy",
     ]);
     expect(cryptoStorage.values.size).toBe(0);
+    expect(plainStorage.values.get("ruyi.settings.v1")).toMatchObject({
+      apiKeyConfigurationIds: [],
+    });
 
     state = await runtime.deleteServiceConfiguration("custom-copy", true);
     state = await runtime.deleteServiceConfiguration("deepseek-flash", true);

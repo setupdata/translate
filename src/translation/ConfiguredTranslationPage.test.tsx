@@ -342,6 +342,8 @@ describe("ConfiguredTranslationPage", () => {
     expect(dialog).toHaveTextContent("源文本");
     expect(dialog).toHaveTextContent("目标语言");
     expect(dialog).toHaveTextContent("命中的术语");
+    expect(dialog).toHaveTextContent("避免提交你无权向模型服务提供的敏感内容");
+    expect(dialog).toHaveTextContent("客户端直连仍不能保证密钥绝对无法被本机高权限程序");
     expect(runtime.startStandardTranslation).toHaveBeenCalledTimes(2);
   });
 

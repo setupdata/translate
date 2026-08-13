@@ -58,6 +58,7 @@ function unavailableRuntime(): RuyiRuntimeBridge {
     },
     subscribeCurrentTranslation: () => () => undefined,
     clearCurrentTranslation: () => undefined,
+    resetAllSettings: unavailable,
   });
 }
 

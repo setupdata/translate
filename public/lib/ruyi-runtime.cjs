@@ -57,6 +57,13 @@ const {
   parallelAccelerationAdvice,
   runSegmentPool,
 } = require("./translation-segmentation.cjs");
+const {
+  SETTINGS_VERSION,
+  TERMINOLOGY_VERSION,
+  migrateSettingsPayload,
+  migrateTerminologyPayload,
+  repairSettingsConfiguration,
+} = require("./storage-migrations.cjs");
 
 const CONNECTION_TEST_SOURCE_TEXT = "Connection test";
 const CONNECTION_TEST_MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -84,11 +91,13 @@ function createInitialSettings(servicePreset = DEEPSEEK_FLASH_PRESET) {
     modelsFetchedAt: null,
     performanceSamples: [],
     ...servicePreset,
+    thinkingEnabled: Boolean(servicePreset.thinkingEnabled),
   };
   return {
-    version: 1,
+    version: SETTINGS_VERSION,
     currentServiceConfigurationId: initialConfiguration.id,
     serviceConfigurations: [initialConfiguration],
+    apiKeyConfigurationIds: [],
     defaults: {
       targetLanguage: { ...DEFAULTS.targetLanguage },
       qualityMode: DEFAULTS.qualityMode,
@@ -458,6 +467,8 @@ function createRuyiRuntime({
   const cancelledPreparingTaskIds = new Set();
   const currentTranslationListeners = new Set();
   const serviceOperations = new Map();
+  const blockedSettingsSources = new WeakMap();
+  const blockedTerminologyStates = new WeakSet();
   let activeTask = null;
   let currentCopyCandidate = null;
   let currentTranslation = null;
@@ -705,18 +716,61 @@ function createRuyiRuntime({
 
   function readSettings() {
     const existing = plainStorage.getItem(SETTINGS_KEY);
-    if (existing && existing.version === 1) {
-      return existing;
-    }
-
     const initial = createInitialSettings(servicePreset);
-    plainStorage.setItem(SETTINGS_KEY, initial);
-    return initial;
+    const migration = migrateSettingsPayload(existing, initial);
+    if (migration.shouldWrite) {
+      try {
+        plainStorage.setItem(SETTINGS_KEY, migration.state);
+      } catch {
+        const sourceIndexes = new Map();
+        const message =
+          "设置迁移结果无法写入，原数据未被覆盖；相关配置已停用，请重新编辑或恢复所有设置。";
+        const state = {
+          ...migration.state,
+          serviceConfigurations: configurationsIn(migration.state).map(
+            (configuration, index) => {
+              sourceIndexes.set(configuration.id, index);
+              return {
+                ...configuration,
+                disabled: true,
+                repairable: existing && existing.version === 1,
+                migrationError: message,
+              };
+            },
+          ),
+          storageIssue: { code: "migration_failed", message },
+        };
+        blockedSettingsSources.set(state, {
+          blocked: true,
+          rawSettings: existing,
+          sourceIndexes,
+          state,
+        });
+        return state;
+      }
+    }
+    if (migration.blocked) {
+      blockedSettingsSources.set(migration.state, migration);
+    }
+    return migration.state;
+  }
+
+  function writeSettings(settings) {
+    assertSettingsWritable(settings);
+    plainStorage.setItem(SETTINGS_KEY, settings);
+  }
+
+  function assertSettingsWritable(settings) {
+    if (!blockedSettingsSources.has(settings)) return;
+    throw Object.assign(
+      new Error("设置数据需要先重新编辑或恢复，原数据未被覆盖。"),
+      { code: "storage_migration_required" },
+    );
   }
 
   function createInitialTerminologyState() {
     return {
-      version: 1,
+      version: TERMINOLOGY_VERSION,
       termbases: [],
       domainProfiles: [],
       referenceTranslations: [],
@@ -726,23 +780,39 @@ function createRuyiRuntime({
 
   function readTerminologyState() {
     const existing = cryptoStorage.getItem(TERMINOLOGY_KEY);
-    if (
-      existing &&
-      existing.version === 1 &&
-      Array.isArray(existing.termbases) &&
-      Array.isArray(existing.domainProfiles)
-    ) {
-      return {
-        ...existing,
-        referenceTranslations: Array.isArray(existing.referenceTranslations)
-          ? existing.referenceTranslations
-          : [],
-      };
+    const migration = migrateTerminologyPayload(
+      existing,
+      createInitialTerminologyState(),
+    );
+    if (migration.shouldWrite) {
+      try {
+        cryptoStorage.setItem(TERMINOLOGY_KEY, migration.state);
+      } catch {
+        const state = {
+          ...migration.state,
+          storageIssue: {
+            code: "migration_failed",
+            message:
+              "术语数据迁移结果无法写入，原加密数据未被覆盖。请恢复所有设置后重试。",
+          },
+        };
+        blockedTerminologyStates.add(state);
+        return state;
+      }
     }
-    return createInitialTerminologyState();
+    if (migration.blocked) {
+      blockedTerminologyStates.add(migration.state);
+    }
+    return migration.state;
   }
 
   function writeTerminologyState(state) {
+    if (blockedTerminologyStates.has(state) || state.storageIssue) {
+      throw Object.assign(
+        new Error("加密数据需要先恢复设置，原术语库、行业配置和参考译例未被覆盖。"),
+        { code: "storage_migration_required" },
+      );
+    }
     try {
       cryptoStorage.setItem(TERMINOLOGY_KEY, state);
     } catch {
@@ -771,6 +841,7 @@ function createRuyiRuntime({
         typeof state.currentDomainProfileId === "string"
           ? state.currentDomainProfileId
           : null,
+      ...(state.storageIssue ? { storageIssue: { ...state.storageIssue } } : {}),
     });
   }
 
@@ -1043,6 +1114,14 @@ function createRuyiRuntime({
 
   function prepareTerminologyInput(request, targetLanguage, submittedInputs) {
     const terminologyState = readTerminologyState();
+    if (terminologyState.storageIssue) {
+      throw Object.assign(
+        new Error(
+          "术语库、行业配置或参考译例的加密数据无法安全读取。请先恢复所有设置后再翻译。",
+        ),
+        { code: "terminology_validation_error" },
+      );
+    }
     const selectedDomainProfile = submittedInputs.domainProfileId
       ? terminologyState.domainProfiles.find(
           (domainProfile) => domainProfile.id === submittedInputs.domainProfileId,
@@ -1166,6 +1245,25 @@ function createRuyiRuntime({
     return cryptoStorage.getItem(`${API_KEY_PREFIX}${configurationId}`);
   }
 
+  function registeredApiKeyIdsIn(settings) {
+    return Array.isArray(settings.apiKeyConfigurationIds)
+      ? settings.apiKeyConfigurationIds
+      : [];
+  }
+
+  function registerApiKeyId(settings, configurationId) {
+    const ids = registeredApiKeyIdsIn(settings);
+    if (!ids.includes(configurationId)) {
+      settings.apiKeyConfigurationIds = [...ids, configurationId];
+    }
+  }
+
+  function unregisterApiKeyId(settings, configurationId) {
+    settings.apiKeyConfigurationIds = registeredApiKeyIdsIn(settings).filter(
+      (candidate) => candidate !== configurationId,
+    );
+  }
+
   function defaultsView(settings) {
     return {
       targetLanguage: {
@@ -1173,7 +1271,10 @@ function createRuyiRuntime({
           ? settings.defaults.targetLanguage
           : DEFAULTS.targetLanguage),
       },
-      qualityMode: "standard",
+      qualityMode:
+        settings.defaults && settings.defaults.qualityMode === "precision"
+          ? "precision"
+          : "standard",
       additionalRequirements:
         settings.defaults &&
         typeof settings.defaults.additionalRequirements === "string"
@@ -1191,10 +1292,14 @@ function createRuyiRuntime({
           ? settings.currentServiceConfigurationId
           : null,
       serviceConfigurations: configurationsIn(settings).map((configuration) =>
-        serviceConfigurationView(configuration, apiKeyFor(configuration.id)),
+        serviceConfigurationView(
+          configuration,
+          configuration.disabled ? null : apiKeyFor(configuration.id),
+        ),
       ),
       backgroundNotificationsEnabled:
         !settings.defaults || settings.defaults.backgroundNotificationsEnabled !== false,
+      ...(settings.storageIssue ? { storageIssue: { ...settings.storageIssue } } : {}),
     });
   }
 
@@ -1212,9 +1317,13 @@ function createRuyiRuntime({
 
     return {
       serviceConfiguration: configuration
-        ? serviceConfigurationView(configuration, apiKeyFor(configuration.id))
+        ? serviceConfigurationView(
+            configuration,
+            configuration.disabled ? null : apiKeyFor(configuration.id),
+          )
         : null,
       defaults: defaultsView(settings),
+      ...(settings.storageIssue ? { storageIssue: { ...settings.storageIssue } } : {}),
     };
   }
 
@@ -1235,6 +1344,7 @@ function createRuyiRuntime({
     }
 
     const settings = readSettings();
+    assertSettingsWritable(settings);
     const configuration = findConfiguration(settings, configurationId);
     if (!configuration) {
       throw new Error("没有可保存密钥的服务配置。");
@@ -1244,10 +1354,9 @@ function createRuyiRuntime({
     }
     normalizeServiceUrl(configuration.translationUrl, "translationUrl", apiKey.trim());
     normalizeServiceUrl(configuration.modelListUrl, "modelListUrl", apiKey.trim());
-    cryptoStorage.setItem(
-      `${API_KEY_PREFIX}${configuration.id}`,
-      apiKey.trim(),
-    );
+    registerApiKeyId(settings, configuration.id);
+    writeSettings(settings);
+    cryptoStorage.setItem(`${API_KEY_PREFIX}${configuration.id}`, apiKey.trim());
     return serviceConfigurationsState(settings);
   }
 
@@ -1259,36 +1368,42 @@ function createRuyiRuntime({
 
   async function deleteServiceApiKey(configurationId) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     if (!findConfiguration(settings, configurationId)) {
       throw configurationError(null, "服务配置不存在。");
     }
     cryptoStorage.removeItem(`${API_KEY_PREFIX}${configurationId}`);
+    unregisterApiKeyId(settings, configurationId);
+    writeSettings(settings);
     return serviceConfigurationsState(settings);
   }
 
   async function clearServicePerformanceData(configurationId) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     const configuration = findConfiguration(settings, configurationId);
     if (!configuration) {
       throw configurationError(null, "服务配置不存在。");
     }
     configuration.performanceSamples = [];
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    writeSettings(settings);
     return serviceConfigurationsState(settings);
   }
 
   async function setBackgroundNotificationsEnabled(enabled) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     settings.defaults = {
       ...(settings.defaults || {}),
       backgroundNotificationsEnabled: Boolean(enabled),
     };
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    writeSettings(settings);
     return serviceConfigurationsState(settings);
   }
 
   async function setServiceThinkingMode(configurationId, enabled) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     const configuration = findConfiguration(settings, configurationId);
     if (!configuration) throw configurationError(null, "服务配置不存在。");
     if (configuration.type !== "deepseek-official") {
@@ -1299,7 +1414,7 @@ function createRuyiRuntime({
     }
     assertConfigurationCanBeEdited(configurationId);
     configuration.thinkingEnabled = Boolean(enabled);
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    writeSettings(settings);
     markCurrentTranslationForConfigurationChange(configurationId);
     return serviceConfigurationsState(settings);
   }
@@ -1312,7 +1427,7 @@ function createRuyiRuntime({
         ? configurationId
         : settings.currentServiceConfigurationId,
     );
-    const summary = configuration
+    const summary = configuration && !configuration.disabled
       ? serviceConfigurationView(configuration, apiKeyFor(configuration.id))
           .performanceSummary
       : null;
@@ -1358,6 +1473,7 @@ function createRuyiRuntime({
 
   function recordPerformanceSample(configurationId, sample) {
     const settings = readSettings();
+    if (blockedSettingsSources.has(settings)) return;
     const configuration = findConfiguration(settings, configurationId);
     if (!configuration) return;
     const samples = Array.isArray(configuration.performanceSamples)
@@ -1372,7 +1488,7 @@ function createRuyiRuntime({
       segmentCount: sample.segmentCount,
     });
     configuration.performanceSamples = samples.slice(-10);
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    writeSettings(settings);
   }
 
   function cancelServiceOperationsForConfiguration(configurationId) {
@@ -1434,6 +1550,7 @@ function createRuyiRuntime({
 
   async function saveServiceConfiguration(input, credentialForm) {
     const settings = readSettings();
+    const blockedMigration = blockedSettingsSources.get(settings);
     const configurations = configurationsIn(settings);
     const existing =
       input && typeof input.id === "string"
@@ -1441,6 +1558,18 @@ function createRuyiRuntime({
         : null;
     if (input && typeof input.id === "string" && !existing) {
       throw configurationError(null, "要编辑的服务配置不存在。");
+    }
+    const repairingDisabledConfiguration = Boolean(
+      existing &&
+        existing.disabled &&
+        blockedMigration &&
+        blockedMigration.sourceIndexes.has(existing.id),
+    );
+    if (blockedMigration && !repairingDisabledConfiguration) {
+      throw Object.assign(
+        new Error("请先重新编辑已停用的服务配置，原设置数据未被覆盖。"),
+        { code: "storage_migration_required" },
+      );
     }
     if (existing) assertConfigurationCanBeEdited(existing.id);
     const previousTranslationUrl = existing && existing.translationUrl;
@@ -1452,7 +1581,9 @@ function createRuyiRuntime({
     const normalized = validateServiceConfiguration(input, {
       existing,
       configurations,
-      apiKey: replacementApiKey || (existing ? apiKeyFor(existing.id) : null),
+      apiKey:
+        replacementApiKey ||
+        (existing && !existing.disabled ? apiKeyFor(existing.id) : null),
       idFactory: configurationIdFactory,
     });
 
@@ -1462,9 +1593,6 @@ function createRuyiRuntime({
       cancelServiceOperationsForConfiguration(existing.id);
       if (previousTranslationUrl !== normalized.translationUrl) {
         invalidateConfirmationsForConfiguration(existing.id);
-      }
-      if (normalized.authentication === "none") {
-        cryptoStorage.removeItem(`${API_KEY_PREFIX}${normalized.id}`);
       }
       markCurrentTranslationForConfigurationChange(existing.id);
     } else {
@@ -1479,14 +1607,41 @@ function createRuyiRuntime({
     }
     settings.serviceConfigurations = configurations;
     if (normalized.authentication === "bearer" && replacementApiKey) {
-      cryptoStorage.setItem(`${API_KEY_PREFIX}${normalized.id}`, replacementApiKey);
+      registerApiKeyId(settings, normalized.id);
+    } else if (normalized.authentication === "none") {
+      unregisterApiKeyId(settings, normalized.id);
     }
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    if (repairingDisabledConfiguration) {
+      const repairedLegacySettings = repairSettingsConfiguration(
+        blockedMigration.rawSettings,
+        blockedMigration.sourceIndexes.get(existing.id),
+        normalized,
+      );
+      if (normalized.authentication === "bearer" && replacementApiKey) {
+        registerApiKeyId(repairedLegacySettings, normalized.id);
+      } else if (normalized.authentication === "none") {
+        unregisterApiKeyId(repairedLegacySettings, normalized.id);
+      }
+      plainStorage.setItem(SETTINGS_KEY, repairedLegacySettings);
+      if (normalized.authentication === "bearer" && replacementApiKey) {
+        cryptoStorage.setItem(`${API_KEY_PREFIX}${normalized.id}`, replacementApiKey);
+      } else if (normalized.authentication === "none") {
+        cryptoStorage.removeItem(`${API_KEY_PREFIX}${normalized.id}`);
+      }
+      return serviceConfigurationsState(readSettings());
+    }
+    writeSettings(settings);
+    if (normalized.authentication === "bearer" && replacementApiKey) {
+      cryptoStorage.setItem(`${API_KEY_PREFIX}${normalized.id}`, replacementApiKey);
+    } else if (normalized.authentication === "none") {
+      cryptoStorage.removeItem(`${API_KEY_PREFIX}${normalized.id}`);
+    }
     return serviceConfigurationsState(settings);
   }
 
   async function duplicateServiceConfiguration(configurationId) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     const configurations = configurationsIn(settings);
     const source = findConfiguration(settings, configurationId);
     if (!source) throw configurationError(null, "要复制的服务配置不存在。");
@@ -1509,7 +1664,7 @@ function createRuyiRuntime({
     delete copy.confirmedPrecisionTranslationUrl;
     configurations.push(copy);
     settings.currentServiceConfigurationId = copy.id;
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    writeSettings(settings);
     if (currentTranslation) {
       updateCurrentTranslationInputs({
         ...currentTranslation.inputs,
@@ -1521,6 +1676,7 @@ function createRuyiRuntime({
 
   async function moveServiceConfiguration(configurationId, direction) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     const configurations = configurationsIn(settings);
     const index = configurations.findIndex((candidate) => candidate.id === configurationId);
     if (index < 0) throw configurationError(null, "要排序的服务配置不存在。");
@@ -1528,18 +1684,19 @@ function createRuyiRuntime({
     if (targetIndex >= 0 && targetIndex < configurations.length) {
       const [configuration] = configurations.splice(index, 1);
       configurations.splice(targetIndex, 0, configuration);
-      plainStorage.setItem(SETTINGS_KEY, settings);
+      writeSettings(settings);
     }
     return serviceConfigurationsState(settings);
   }
 
   async function setCurrentServiceConfiguration(configurationId) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     if (!findConfiguration(settings, configurationId)) {
       throw configurationError(null, "要使用的服务配置不存在。");
     }
     settings.currentServiceConfigurationId = configurationId;
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    writeSettings(settings);
     if (currentTranslation) {
       updateCurrentTranslationInputs({
         ...currentTranslation.inputs,
@@ -1551,6 +1708,7 @@ function createRuyiRuntime({
 
   async function deleteServiceConfiguration(configurationId, confirmCurrent = false) {
     const settings = readSettings();
+    assertSettingsWritable(settings);
     const configurations = configurationsIn(settings);
     const index = configurations.findIndex((candidate) => candidate.id === configurationId);
     if (index < 0) throw configurationError(null, "要删除的服务配置不存在。");
@@ -1565,6 +1723,7 @@ function createRuyiRuntime({
     cancelServiceOperationsForConfiguration(configurationId);
     invalidateConfirmationsForConfiguration(configurationId);
     cryptoStorage.removeItem(`${API_KEY_PREFIX}${configurationId}`);
+    unregisterApiKeyId(settings, configurationId);
     configurations.splice(index, 1);
     if (configurations.length === 0) {
       settings.serviceConfigurations = [];
@@ -1575,7 +1734,7 @@ function createRuyiRuntime({
         settings.currentServiceConfigurationId = configurations[0].id;
       }
     }
-    plainStorage.setItem(SETTINGS_KEY, settings);
+    writeSettings(settings);
     if (currentTranslation) {
       updateCurrentTranslationInputs({
         ...currentTranslation.inputs,
@@ -1629,6 +1788,12 @@ function createRuyiRuntime({
     const configuration = findConfiguration(settings, configurationId);
     if (!configuration) {
       throw configurationError(null, "服务配置不存在。");
+    }
+    if (configuration.disabled) {
+      throw Object.assign(
+        new Error(configuration.migrationError || "服务配置已停用，请重新编辑。"),
+        { code: "configuration_error" },
+      );
     }
     const apiKey = apiKeyFor(configuration.id);
     if (
@@ -1742,7 +1907,7 @@ function createRuyiRuntime({
       const fetchedAt = now().toISOString();
       latestConfiguration.cachedModels = models;
       latestConfiguration.modelsFetchedAt = fetchedAt;
-      plainStorage.setItem(SETTINGS_KEY, latestSettings);
+      writeSettings(latestSettings);
       return freezeDeep({
         status: "completed",
         models: [...models],
@@ -1939,6 +2104,16 @@ function createRuyiRuntime({
       storeCurrentResult(request.taskId, result, "needs_configuration");
       return result;
     }
+    if (state.serviceConfiguration.disabled) {
+      const result = {
+        status: "configuration_required",
+        reason: "invalid_configuration",
+        sourceRetained: true,
+        serviceConfiguration: state.serviceConfiguration,
+      };
+      storeCurrentResult(request.taskId, result, "needs_configuration");
+      return result;
+    }
     if (
       state.serviceConfiguration.authentication === "bearer" &&
       !state.serviceConfiguration.hasApiKey
@@ -2009,7 +2184,7 @@ function createRuyiRuntime({
         }
         configuration.confirmedTranslationUrl = normalizedTranslationUrl;
         configuration.confirmedPrecisionTranslationUrl = normalizedTranslationUrl;
-        plainStorage.setItem(SETTINGS_KEY, settings);
+        writeSettings(settings);
       } else {
         const confirmationToken = tokenFactory();
         pendingConfirmations.set(confirmationToken, {
@@ -2918,6 +3093,16 @@ function createRuyiRuntime({
       storeCurrentResult(request.taskId, result, "needs_configuration");
       return result;
     }
+    if (state.serviceConfiguration.disabled) {
+      const result = {
+        status: "configuration_required",
+        reason: "invalid_configuration",
+        sourceRetained: true,
+        serviceConfiguration: state.serviceConfiguration,
+      };
+      storeCurrentResult(request.taskId, result, "needs_configuration");
+      return result;
+    }
 
     if (
       state.serviceConfiguration.authentication === "bearer" &&
@@ -2986,7 +3171,7 @@ function createRuyiRuntime({
         }
 
         configuration.confirmedTranslationUrl = normalizedTranslationUrl;
-        plainStorage.setItem(SETTINGS_KEY, settings);
+        writeSettings(settings);
       } else {
         const confirmationToken = tokenFactory();
         pendingConfirmations.set(confirmationToken, {
@@ -3513,6 +3698,65 @@ function createRuyiRuntime({
     publishCurrentTranslation(null);
   }
 
+  async function resetAllSettings(confirmReset = false) {
+    if (!confirmReset) {
+      throw Object.assign(
+        new Error("恢复所有设置前需要再次确认。"),
+        { code: "confirmation_required" },
+      );
+    }
+
+    cancelAllCurrentWork();
+    for (const operation of serviceOperations.values()) {
+      operation.controller.abort();
+    }
+    serviceOperations.clear();
+    pendingCsvImports.clear();
+    currentCopyCandidate = null;
+    publishCurrentTranslation(null);
+
+    try {
+      const persisted = plainStorage.getItem(SETTINGS_KEY);
+      const configurationIds = new Set([
+        DEEPSEEK_FLASH_PRESET.id,
+        servicePreset.id,
+      ]);
+      if (persisted && Array.isArray(persisted.serviceConfigurations)) {
+        for (const configuration of persisted.serviceConfigurations) {
+          if (
+            configuration &&
+            typeof configuration.id === "string" &&
+            configuration.id.length > 0
+          ) {
+            configurationIds.add(configuration.id);
+          }
+        }
+      }
+      if (persisted && Array.isArray(persisted.apiKeyConfigurationIds)) {
+        for (const configurationId of persisted.apiKeyConfigurationIds) {
+          if (typeof configurationId === "string" && configurationId.length > 0) {
+            configurationIds.add(configurationId);
+          }
+        }
+      }
+      for (const configurationId of configurationIds) {
+        cryptoStorage.removeItem(`${API_KEY_PREFIX}${configurationId}`);
+      }
+      cryptoStorage.removeItem(TERMINOLOGY_KEY);
+      plainStorage.removeItem(SETTINGS_KEY);
+      const initial = createInitialSettings(servicePreset);
+      plainStorage.setItem(SETTINGS_KEY, initial);
+      return serviceConfigurationsState(initial);
+    } catch {
+      throw Object.assign(
+        new Error(
+          "恢复设置未完成，本地数据可能已部分删除。请检查 uTools 存储状态后重试；未报告成功的数据不应视为已全部删除。",
+        ),
+        { code: "storage_reset_failed" },
+      );
+    }
+  }
+
   function copyTranslation(taskId, confirmRisks = false) {
     if (
       !currentCopyCandidate ||
@@ -3604,6 +3848,7 @@ function createRuyiRuntime({
     updateCurrentTranslationInputs,
     subscribeCurrentTranslation,
     clearCurrentTranslation,
+    resetAllSettings,
   });
 }
 

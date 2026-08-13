@@ -105,7 +105,27 @@ describe("Ruyi runtime", () => {
       apiKeyFixture,
     );
     expect(JSON.stringify(state)).not.toContain(apiKeyFixture);
+    expect(plainStorage.values.get("ruyi.settings.v1")).toMatchObject({
+      apiKeyConfigurationIds: ["deepseek-flash"],
+    });
     expect(transport.request).not.toHaveBeenCalled();
+  });
+
+  it("never reveals a complete short API key in its mask", async () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    const runtime = createRuyiRuntime({
+      plainStorage: memoryStorage(),
+      cryptoStorage: memoryStorage(),
+      transport: { request: vi.fn() },
+    });
+
+    const state = await runtime.saveApiKey(credentialForm("abc"));
+
+    expect(state.serviceConfiguration).toMatchObject({
+      hasApiKey: true,
+      maskedApiKey: "••••••••",
+    });
+    expect(JSON.stringify(state)).not.toContain("abc");
   });
 
   it("keeps the source text in the current process and never sends without a key", async () => {
@@ -950,8 +970,9 @@ describe("Ruyi runtime", () => {
       },
     };
     await expect(runtime.startStandardTranslation(request)).resolves.toMatchObject({
-      status: "failed",
-      error: { code: "configuration_error" },
+      status: "configuration_required",
+      reason: "invalid_configuration",
+      serviceConfiguration: { disabled: true },
     });
     expect(transport.request).not.toHaveBeenCalled();
 
@@ -996,8 +1017,9 @@ describe("Ruyi runtime", () => {
       });
 
       expect(result).toMatchObject({
-        status: "failed",
-        error: { code: "configuration_error" },
+        status: "configuration_required",
+        reason: "invalid_configuration",
+        serviceConfiguration: { disabled: true },
       });
     }
     expect(transport.request).not.toHaveBeenCalled();

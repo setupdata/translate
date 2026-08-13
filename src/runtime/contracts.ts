@@ -21,6 +21,14 @@ export type ServiceConfigurationView = {
   modelsFetchedAt: string | null;
   performanceSummary: ServicePerformanceSummary | null;
   thinkingEnabled?: boolean;
+  disabled?: boolean;
+  migrationError?: string;
+  repairable?: boolean;
+};
+
+export type StorageIssue = {
+  code: "migration_failed" | "unsupported_version" | "data_corrupted";
+  message: string;
 };
 
 export type TranslationQualityMode = "standard" | "precision";
@@ -54,6 +62,7 @@ export type ServiceConfigurationsState = {
   currentServiceConfigurationId: string | null;
   serviceConfigurations: ServiceConfigurationView[];
   backgroundNotificationsEnabled?: boolean;
+  storageIssue?: StorageIssue;
 };
 
 export type RuntimeConfigurationState = {
@@ -64,6 +73,7 @@ export type RuntimeConfigurationState = {
     additionalRequirements: string;
     backgroundNotificationsEnabled?: boolean;
   };
+  storageIssue?: StorageIssue;
 };
 
 export type StandardTranslationRequest = {
@@ -157,6 +167,7 @@ export type TerminologyState = {
   domainProfiles: Array<DomainProfile & { id: string }>;
   referenceTranslations: Array<ReferenceTranslation & { id: string }>;
   currentDomainProfileId: string | null;
+  storageIssue?: StorageIssue;
 };
 
 export type TermbaseCsvIssue = {
@@ -383,7 +394,7 @@ export type StandardTranslationResult =
     }
   | {
       status: "configuration_required";
-      reason: "missing_api_key" | "missing_configuration";
+      reason: "missing_api_key" | "missing_configuration" | "invalid_configuration";
       sourceRetained: true;
       serviceConfiguration: ServiceConfigurationView | null;
     }
@@ -553,4 +564,5 @@ export interface RuyiRuntimeBridge {
     listener: (snapshot: CurrentTranslationSnapshot | null) => void,
   ): () => void;
   clearCurrentTranslation(): void;
+  resetAllSettings?(confirmReset?: boolean): Promise<ServiceConfigurationsState>;
 }

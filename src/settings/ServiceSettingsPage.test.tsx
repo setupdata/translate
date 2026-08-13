@@ -94,11 +94,15 @@ describe("ServiceSettingsPage", () => {
     expect(
       screen.getByRole("heading", { name: "隐私与数据说明" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/uTools 数据同步/u)).toBeInTheDocument();
+    expect(screen.getByText(/开启同步后/u)).toBeInTheDocument();
     expect(screen.getByText(/本机高权限程序或调试手段/u)).toBeInTheDocument();
-    expect(screen.getByText(/服务配置名称、地址、协议、模型和模型列表缓存/u)).toBeInTheDocument();
+    expect(screen.getByText(/服务配置名称、地址、协议、模型、模型列表缓存/u)).toBeInTheDocument();
     expect(screen.getByText(/删除 API Key/u)).toBeInTheDocument();
     expect(screen.getByText(/uTools 的同步数据管理/u)).toBeInTheDocument();
+    expect(screen.getByText(/API Key、术语库、行业配置和参考译例/u)).toBeInTheDocument();
+    expect(screen.getByText(/当前翻译只保留在插件进程内存中/u)).toBeInTheDocument();
+    expect(screen.getByText(/精译模式会向同一服务发起多次调用/u)).toBeInTheDocument();
+    expect(screen.getByText(/不能保证删除 uTools 已同步到远端或其他设备的副本/u)).toBeInTheDocument();
     expect(getServiceConfigurations).toHaveBeenCalledOnce();
     expect(testServiceConnection).not.toHaveBeenCalled();
     expect(fetchServiceModels).not.toHaveBeenCalled();
@@ -378,5 +382,86 @@ describe("ServiceSettingsPage", () => {
     expect(
       screen.getByRole("button", { name: "添加 DeepSeek 官方配置" }),
     ).toBeEnabled();
+  });
+
+  it("shows a migration failure, keeps the affected configuration disabled, and offers editing", async () => {
+    const disabledState: ServiceConfigurationsState = {
+      ...initialState,
+      storageIssue: {
+        code: "migration_failed",
+        message: "部分服务配置无法安全迁移，原数据未被覆盖。",
+      },
+      serviceConfigurations: [
+        {
+          ...custom,
+          name: "需要修复的服务",
+          disabled: true,
+          repairable: true,
+          migrationError: "配置数据无法安全迁移，已停用；请重新编辑。",
+        },
+      ],
+    };
+    const runtime = createRuntimeStub({
+      getServiceConfigurations: vi.fn(async () => disabledState),
+    });
+
+    render(<ServiceSettingsPage runtime={runtime} />);
+
+    expect((await screen.findAllByRole("alert"))[0]).toHaveTextContent(
+      "部分服务配置无法安全迁移，原数据未被覆盖。",
+    );
+    expect(screen.getByText(/配置数据无法安全迁移，已停用/u)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "设为当前 需要修复的服务" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "重新编辑 需要修复的服务" }));
+    expect(screen.getByRole("heading", { name: "重新编辑服务配置" })).toBeInTheDocument();
+  });
+
+  it("confirms restoring all settings, restores focus on Escape, and refreshes the empty preset", async () => {
+    const resetState: ServiceConfigurationsState = {
+      currentServiceConfigurationId: "deepseek-flash",
+      serviceConfigurations: [
+        {
+          ...official,
+          hasApiKey: false,
+          maskedApiKey: null,
+          cachedModels: [],
+          modelsFetchedAt: null,
+          performanceSummary: null,
+        },
+      ],
+      backgroundNotificationsEnabled: true,
+    };
+    const resetAllSettings = vi.fn(async () => resetState);
+    const runtime = createRuntimeStub({
+      getServiceConfigurations: vi.fn(async () => initialState),
+      resetAllSettings,
+    });
+
+    render(<ServiceSettingsPage runtime={runtime} />);
+    await screen.findByText("Custom One");
+    const trigger = screen.getByRole("button", { name: "恢复所有设置" });
+    await userEvent.click(trigger);
+
+    const dialog = screen.getByRole("dialog", { name: "确认恢复所有设置" });
+    expect(dialog).toHaveTextContent("所有服务配置和 API Key");
+    expect(dialog).toHaveTextContent("术语库、行业配置和参考译例");
+    expect(dialog).toHaveTextContent("当前翻译");
+    expect(dialog).toHaveTextContent("不能保证删除 uTools 已同步到远端或其他设备的副本");
+    const cancel = screen.getByRole("button", { name: "取消恢复" });
+    await waitFor(() => expect(cancel).toHaveFocus());
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "确认恢复所有设置" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("button", { name: "确认恢复并删除" }));
+
+    await waitFor(() => expect(resetAllSettings).toHaveBeenCalledWith(true));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "已恢复所有设置，已重新建立空密钥 DeepSeek Flash 预设",
+    );
+    expect(screen.getByText("未配置 API Key")).toBeInTheDocument();
+    expect(screen.queryByText("Custom One")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 });

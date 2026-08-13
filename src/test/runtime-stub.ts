@@ -190,6 +190,7 @@ export function createRuntimeStub(
     }),
     subscribeCurrentTranslation: () => () => undefined,
     clearCurrentTranslation: () => undefined,
+    resetAllSettings: async () => configuredServiceState(),
     ...overrides,
   };
   if (

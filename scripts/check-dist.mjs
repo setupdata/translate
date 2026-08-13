@@ -18,6 +18,7 @@ const requiredFiles = [
   "lib/ruyi-translate-v1.schema.json",
   "lib/ruyi-runtime.cjs",
   "lib/service-configurations.cjs",
+  "lib/storage-migrations.cjs",
   "lib/terminology.cjs",
   "lib/terminology-csv.cjs",
   "lib/text-limits.cjs",

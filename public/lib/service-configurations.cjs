@@ -220,7 +220,13 @@ function performanceSummary(configuration) {
 }
 
 function serviceConfigurationView(configuration, apiKey) {
-  const hasApiKey = typeof apiKey === "string" && apiKey.length > 0;
+  const disabled = Boolean(configuration.disabled);
+  const hasApiKey = !disabled && typeof apiKey === "string" && apiKey.length > 0;
+  const maskedApiKey = hasApiKey
+    ? apiKey.length > 4
+      ? `••••••••${apiKey.slice(-4)}`
+      : "••••••••"
+    : null;
   return {
     id: configuration.id,
     name: configuration.name,
@@ -232,7 +238,7 @@ function serviceConfigurationView(configuration, apiKey) {
     model: configuration.model,
     stream: Boolean(configuration.stream),
     hasApiKey,
-    maskedApiKey: hasApiKey ? `••••••••${apiKey.slice(-4)}` : null,
+    maskedApiKey,
     cachedModels: Array.isArray(configuration.cachedModels)
       ? [...configuration.cachedModels]
       : [],
@@ -241,6 +247,16 @@ function serviceConfigurationView(configuration, apiKey) {
         ? configuration.modelsFetchedAt
         : null,
     performanceSummary: performanceSummary(configuration),
+    ...(disabled
+      ? {
+          disabled: true,
+          migrationError:
+            typeof configuration.migrationError === "string"
+              ? configuration.migrationError
+              : "配置数据无法安全迁移，已停用；请重新编辑。",
+          repairable: Boolean(configuration.repairable),
+        }
+      : {}),
     ...(configuration.type === "deepseek-official" && configuration.thinkingEnabled
       ? { thinkingEnabled: true }
       : {}),

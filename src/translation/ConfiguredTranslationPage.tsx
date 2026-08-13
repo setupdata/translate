@@ -1225,6 +1225,18 @@ export function ConfiguredTranslationPage({
         </section>
       ) : null}
 
+      {result?.status === "configuration_required" &&
+      result.reason === "invalid_configuration" ? (
+        <section aria-labelledby="invalid-configuration-heading">
+          <h2 id="invalid-configuration-heading">服务配置已停用</h2>
+          <p>
+            {result.serviceConfiguration?.migrationError ??
+              "配置数据需要重新编辑，请打开“如意翻译设置”修复后再试。"}
+          </p>
+          <p>源文本仅保留在当前插件进程内，不会发送。</p>
+        </section>
+      ) : null}
+
       {needsApiKey ? (
         <section aria-labelledby="api-key-heading" className="configuration-card">
           <h2 id="api-key-heading">配置 DeepSeek API Key</h2>
@@ -1396,6 +1408,9 @@ export function ConfiguredTranslationPage({
               {confirmation.preview.parallel.fallbackReason}
             </p>
           ) : null}
+          <p>
+            请避免提交你无权向模型服务提供的敏感内容。API Key 虽在本机加密保存且不会回填到页面，但客户端直连仍不能保证密钥绝对无法被本机高权限程序或调试手段提取。
+          </p>
           <div className="dialog-actions">
             <button
               type="button"

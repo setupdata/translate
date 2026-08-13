@@ -283,10 +283,11 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
         </div>
       </div>
       {error && <p role="alert">{error}</p>}
+      {state?.storageIssue && <p role="alert">{state.storageIssue.message}</p>}
       {status && <p role="status">{status}</p>}
       {!state && !error && <p role="status">正在读取术语配置…</p>}
 
-      {state && (
+      {state && !state.storageIssue && (
         <>
           <div className="settings-heading-row">
             <h3>术语库</h3>
