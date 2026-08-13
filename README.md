@@ -8,6 +8,7 @@
 - [第一版提示词契约](docs/prompts/ruyi-translate-v1.md)
 - [可执行 JSON Schema](docs/prompts/ruyi-translate-v1.schema.json)
 - [第一版质量评测方案](docs/quality/ruyi-translate-v1-evaluation.md)
+- [评测资产与发布门槛命令](evaluation/README.md)
 - [ADR-0001：客户端使用用户密钥直连模型服务](docs/adr/0001-client-direct-model-access.md)
 - [用户手册](docs/user-manual.md)
 - [隐私与数据说明](docs/privacy.md)
@@ -35,9 +36,9 @@ npm run dev
 
 当前源文本、译文、本次术语、附加翻译要求、质量风险，以及精译的分析结果、审校问题和修订状态只保留在插件进程内，不写入翻译历史、运行日志或遥测。普通隐藏插件时，只要插件进程仍然存活，当前请求会尽力继续，无数据超时和十分钟总时限仍然生效；后台完成、失败或超时后，插件默认发送一条不含源文、译文、术语或密钥的通用系统通知，用户可以在设置中关闭。点击通知只会返回当前翻译，不会自动复制或粘贴。后台继续和系统通知都不是可靠的离线任务：断网、退出 uTools、结束进程、强制终止、系统休眠或插件更新都可能中断请求，进程结束后也无法恢复。修改源文本、目标语言、质量模式、思考模式、行业配置、本次术语或附加翻译要求不会自动发送，旧译文仍可复制，但在重新翻译前不能粘贴回原窗口。使用“清空当前内容”会取消在途请求并删除这组进程内数据。模型服务如何保存或使用请求内容由对应服务的条款决定，不受插件控制。
 
-生产构建运行 `npm run build`，测试运行 `npm test`。测试会自动启动受控的本地 DeepSeek 兼容模拟服务，不需要真实 API Key，也不会访问真实模型服务；`npm run check:no-clipboard` 会单独检查实现代码中是否出现剪贴板读取、监听或定时轮询。
+生产构建运行 `npm run build`，测试运行 `npm test`。测试会自动启动受控的本地 DeepSeek 兼容模拟服务，不需要真实 API Key，也不会访问真实模型服务；`npm run check:no-clipboard` 会单独检查实现代码中是否出现剪贴板读取、监听或定时轮询。`npm run check:evaluation` 只校验共享的合成评测用例、版本化报告和门槛计算，不请求真实模型；当前 `baseline-v1` 仍是 `pending`。严格发布检查还必须用 `--evidence` 提供实际用例、记录文件和原始证据附件，不会只相信报告内填写的计数、状态或任意哈希。检查器会读取附件，核对候选 commit、包版本、构建输入、字节数和 SHA-256，拒绝重复用例和重复样本，并把人工评审绑定到具体模型输出、把三平台记录绑定到同一个 UPXS 和 uTools 实际安装记录。只有冻结语料、真实模型、双人盲评、性能和三平台证据全部齐全且相互一致时，`npm run check:release` 才会重新验证当前候选的测试与生产构建并通过；证据不足时不得把版本标记为发布候选。仓库不会自行解析 uTools 的专有签名格式，实机记录仍需由测试人负责。
 
-需要制作本地测试包时运行 `npm run prepare:upxs`。脚本会生成经过发布检查的待打包目录和 SHA-256 文件清单；随后仍须在 uTools 开发者工具中选择该目录的 `plugin.json`，由开发者工具生成签名 UPXS。仓库不会把 ZIP 改名冒充 UPXS。详细步骤见 [本地 UPXS 打包说明](artifacts/README.md)。Windows、macOS 和 Linux 的真实入口、网络、通知、复制粘贴、主题及进程残留结果必须分别记录，自动测试不能代替实机验收。
+需要制作本地开发测试包时运行 `npm run prepare:upxs`。它会生成经过构建边界检查的待打包目录和 SHA-256 文件清单，但不代表质量基线已经通过。正式发布候选必须改用 `npm run prepare:release-upxs -- --cases <JSONL> --report <JSON> --evidence <JSON>`，先通过完整发布门槛，随后再由 uTools 开发者工具生成签名 UPXS。仓库不会把 ZIP 改名冒充 UPXS。详细步骤见 [本地 UPXS 打包说明](artifacts/README.md)。Windows、macOS 和 Linux 的真实入口、网络、通知、复制粘贴、主题及进程残留结果必须分别记录，自动测试不能代替实机验收。
 
 ## License
 

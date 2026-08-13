@@ -8,6 +8,7 @@ const documents = {
   privacy: "docs/privacy.md",
   platforms: "docs/platform-acceptance.md",
   packaging: "artifacts/README.md",
+  evaluation: "evaluation/README.md",
 };
 
 await Promise.all(
@@ -21,6 +22,10 @@ const platforms = await readFile(resolve(projectRoot, documents.platforms), "utf
 
 for (const link of [documents.manual, documents.privacy, documents.platforms, documents.packaging]) {
   if (!readme.includes(link)) throw new Error(`README 缺少文档链接：${link}`);
+}
+
+if (!readme.includes(documents.evaluation) || !readme.includes("npm run check:release")) {
+  throw new Error("README 缺少评测资产或严格发布门槛命令说明。");
 }
 
 for (const topic of [
@@ -45,10 +50,15 @@ for (const topic of [
   if (!privacy.includes(topic)) throw new Error(`隐私说明缺少主题：${topic}`);
 }
 
+const platformStatuses = new Set(["待执行", "通过", "失败", "受阻"]);
 for (const platform of ["Windows", "macOS", "Linux"]) {
-  if (!platforms.includes(`| ${platform} | 待执行`)) {
-    throw new Error(`三平台验收记录没有如实标记 ${platform} 的待执行状态。`);
+  const row = platforms
+    .split(/\r?\n/u)
+    .find((line) => line.startsWith(`| ${platform} |`));
+  const cells = row?.split("|").slice(1, -1).map((cell) => cell.trim()) ?? [];
+  if (cells.length !== 9 || !platformStatuses.has(cells.at(-1))) {
+    throw new Error(`三平台验收记录缺少 ${platform} 的完整状态行。`);
   }
 }
 
-process.stdout.write("用户手册、隐私说明、打包说明和三平台验收记录齐全。\n");
+process.stdout.write("用户手册、隐私说明、评测说明、打包说明和三平台验收记录齐全。\n");

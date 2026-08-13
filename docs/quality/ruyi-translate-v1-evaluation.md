@@ -76,6 +76,7 @@
   "caseId": "energy-en-zh-0001",
   "sourceLanguage": "English",
   "targetLanguage": "Simplified Chinese",
+  "evaluationDomain": "energy",
   "domainProfileId": "power-energy-v1",
   "documentType": "technical-report",
   "source": "...",
@@ -113,10 +114,13 @@
   ],
   "referenceTranslationIds": [],
   "expectedIssues": [],
+  "specialtyTags": ["terminology", "structure"],
   "privacyClass": "synthetic",
   "notes": "..."
 }
 ```
+
+`evaluationDomain` 使用 `general`、`software`、`academic`、`energy` 或 `legal`，用于从实际用例重新计算五类领域数量；`specialtyTags` 使用 `terminology`、`structure`、`injection`、`crossSegment` 或 `boundary`，用于重新计算专项集数量。`references` 与 `referenceTranslationIds` 一一对应。若填写 `expectedIssues`，每项必须包含唯一 ID、存在的分段 ID、错误类别、严重度、落在该分段内的源文码点范围和简短说明，不能只保存无法核对的自由 JSON。同一语言方向中，只改用例 ID、大小写或空白的重复原文会被拒绝，不能用复制短句凑语料数量。
 
 术语匹配层另有冲突、别名、大小写、边界和优先级夹具，不能只依赖真实模型输出验证本地规则。
 
@@ -140,6 +144,8 @@ provider-type + service-config-id + normalized-translation-url
 ```
 
 指纹不包含密钥本身。完整翻译 URL、目标语言、分块方式或并发数不同，必须视为不同条件。旧缓存只能在指纹完全相同且服务明确报告相同模型版本时复用；否则重新生成或标为不可比较。
+
+发布判定不能只相信报告中手工填写的计数、哈希或“通过”布尔值。严格检查必须读取一个版本化证据清单，核对最终报告和实际 JSONL 用例的 SHA-256，并逐项核对自动检查、模型输出、配对样本、人工评审、修订、并发、性能和三平台记录的文件哈希、记录数量、候选版本、Git commit 与数据集版本。每条记录还必须引用一个独立原始证据附件；检查器读取附件并核对字节数和 SHA-256。三平台记录共同引用同一个按候选版本命名的 UPXS 文件，保存同一份构建输入清单哈希，并记录该文件已由对应平台的 uTools 实际安装；严格检查会在生产构建后重新计算当前 `dist` 的构建输入哈希。模型输出不得以重复用例和相同请求指纹凑数，并发和性能样本的条件、时段与序号必须唯一，人工评审须绑定具体模型输出并由独立标签重算一致率、Cohen's kappa 和裁决结果。证据记录本身只保存用例 ID、指纹、计数、状态、时间和内容哈希等审计元数据，不保存完整源文、译文、术语、参考译例、密钥或未经清理的错误对象；可能含受控原文或输出的附件不得提交到版本库。配对记录中的无术语条件使用 `termbaseVersion = "none"`，正确适用和不适用条件分别使用 `applicable:`、`inapplicable:` 开头的版本标识，以便检查器在不读取术语正文的情况下确认只改变了预定因素。UPXS 的签名格式由 uTools 控制，仓库检查器不声称能独立解析或验签；签名被接受的依据是三个平台的实际安装记录，测试人仍须对实机证据的真实性负责。
 
 ## 6. 配对评测条件
 

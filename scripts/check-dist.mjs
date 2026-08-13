@@ -1,6 +1,13 @@
 import { builtinModules } from "node:module";
-import { access, readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+
+import {
+  assertAllowedPackageFile,
+  assertNoEvaluationArtifacts,
+  assertNoRemoteStylesheetResources,
+  collectLocalPageAssets,
+} from "./lib/release-boundary.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const distDirectory = resolve(projectRoot, "dist");
@@ -26,7 +33,20 @@ const requiredFiles = [
   "lib/translation-protocol.cjs",
   "lib/translation-segmentation.cjs",
 ];
-const textExtensions = new Set([".cjs", ".css", ".html", ".js", ".json", ".svg"]);
+const textExtensions = new Set([
+  ".cjs",
+  ".css",
+  ".csv",
+  ".html",
+  ".js",
+  ".json",
+  ".md",
+  ".svg",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
 const builtins = new Set(
   builtinModules.flatMap((name) => [name, name.startsWith("node:") ? name.slice(5) : `node:${name}`]),
 );
@@ -43,9 +63,18 @@ async function filesUnder(directory) {
       files.push(...(await filesUnder(absolutePath)));
     } else if (entry.isFile()) {
       files.push(absolutePath);
+    } else if (entry.isSymbolicLink()) {
+      throw new Error(`构建产物不能包含符号链接或目录联接：${absolutePath}`);
     }
   }
   return files;
+}
+
+async function requireRegularFile(path, label) {
+  const stats = await lstat(path);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`${label} 必须是普通文件，不能是目录、符号链接或目录联接。`);
+  }
 }
 
 async function manifestFile(manifest, field) {
@@ -63,16 +92,23 @@ async function manifestFile(manifest, field) {
   if (!withinDist(absolutePath)) {
     throw new Error(`plugin.json 的 ${field} 超出构建目录。`);
   }
-  await access(absolutePath);
+  await requireRegularFile(absolutePath, `plugin.json 的 ${field}`);
   return absolutePath;
 }
 
-await Promise.all(requiredFiles.map((file) => access(resolve(distDirectory, file))));
+await Promise.all(
+  requiredFiles.map((file) => requireRegularFile(resolve(distDirectory, file), `必需发布文件 ${file}`)),
+);
 
 const indexHtml = await readFile(resolve(distDirectory, "index.html"), "utf8");
-if (/(?:src|href)=["']\/(?!\/)/u.test(indexHtml)) {
-  throw new Error("构建产物包含根路径资源，无法从 uTools 的本地文件入口加载。");
+const linkedAssets = collectLocalPageAssets(indexHtml);
+for (const asset of linkedAssets) {
+  if (!/^assets\/[A-Za-z0-9_-]+\.(?:css|js)$/u.test(asset)) {
+    throw new Error(`index.html 引用了发布白名单之外的构建资源：${asset}`);
+  }
+  await requireRegularFile(resolve(distDirectory, asset), `index.html 引用的构建资源 ${asset}`);
 }
+const allowedPackageFiles = new Set([...requiredFiles, ...linkedAssets]);
 
 const manifest = JSON.parse(await readFile(resolve(distDirectory, "plugin.json"), "utf8"));
 if (Object.hasOwn(manifest, "development")) {
@@ -119,6 +155,7 @@ if (
 const allFiles = await filesUnder(distDirectory);
 for (const filePath of allFiles) {
   const packagePath = relative(distDirectory, filePath).replaceAll("\\", "/");
+  assertAllowedPackageFile({ packagePath, allowedPaths: allowedPackageFiles });
   if (
     /(^|\/)(?:node_modules|coverage|__tests__|fixtures?|evaluation-cache|eval-cache|\.cache|\.vite)(?:\/|$)/iu.test(
       packagePath,
@@ -127,8 +164,13 @@ for (const filePath of allFiles) {
   ) {
     throw new Error(`构建产物含不应发布的文件：${packagePath}`);
   }
+  assertNoEvaluationArtifacts({ packagePath });
   if (!textExtensions.has(extname(filePath).toLowerCase())) continue;
   const source = await readFile(filePath, "utf8");
+  assertNoEvaluationArtifacts({ packagePath, source });
+  if (extname(filePath).toLowerCase() === ".css") {
+    assertNoRemoteStylesheetResources(source, packagePath);
+  }
   if (/sourceMappingURL/iu.test(source)) {
     throw new Error(`构建产物含源码映射引用：${packagePath}`);
   }
@@ -140,7 +182,7 @@ for (const filePath of allFiles) {
     throw new Error(`构建产物含测试密钥或敏感测试内容：${packagePath}`);
   }
   if (
-    packagePath.startsWith("assets/") &&
+    (packagePath === "index.html" || packagePath.startsWith("assets/")) &&
     /window\.utools|navigator\.clipboard\s*\.\s*readText|clipboardchange|onClipboardChange|getCopyedText/iu.test(
       source,
     )
@@ -174,7 +216,7 @@ for (const filePath of runtimeScripts) {
     if (!withinDist(dependencyPath)) {
       throw new Error(`运行时模块引用了构建目录外文件：${packagePath}`);
     }
-    await access(dependencyPath);
+    await requireRegularFile(dependencyPath, `运行时模块 ${packagePath} 的依赖 ${dependency}`);
   }
 }
 

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "evaluation-report.v1",
+  "reportId": "baseline-v1",
+  "evaluationVersion": "ruyi-evaluation-v1",
+  "candidateVersion": "0.1.0",
+  "baselineVersion": null,
+  "evaluationDate": "2026-08-13",
+  "changeSummary": "仓库已建立评测格式和发布门槛计算，真实基线尚未采集。",
+  "datasetVersion": null,
+  "dataset": null,
+  "serviceConditions": [],
+  "pairedComparisons": null,
+  "sampleCounts": null,
+  "automaticChecks": null,
+  "humanReview": null,
+  "revision": null,
+  "concurrency": null,
+  "performance": null,
+  "platforms": null,
+  "decisions": [
+    {
+      "reasonCodes": [
+        "evidence.missing",
+        "baseline.version.missing",
+        "dataset.version.missing",
+        "dataset.missing",
+        "services.missing",
+        "comparisons.missing",
+        "samples.missing",
+        "automation.missing",
+        "human_review.missing",
+        "revision.missing",
+        "concurrency.missing",
+        "performance.missing",
+        "platforms.missing"
+      ],
+      "decision": "在冻结语料、真实模型、双人盲评、性能和三平台证据齐全前保持待建立基线。"
+    }
+  ],
+  "notes": "该文件只记录缺失证据，不代表真实模型质量或发布通过。"
+}

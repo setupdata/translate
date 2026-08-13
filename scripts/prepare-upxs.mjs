@@ -1,6 +1,8 @@
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+
+import { createPackageInputManifest } from "./lib/package-input-hash.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const packageJson = JSON.parse(
@@ -17,37 +19,22 @@ if (!stagingDirectory.startsWith(`${stagingRoot}${sep}`)) {
   throw new Error("UPXS 待打包目录超出允许范围。");
 }
 
-async function filesUnder(directory) {
-  const files = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const absolutePath = resolve(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await filesUnder(absolutePath)));
-    } else if (entry.isFile()) {
-      files.push(absolutePath);
-    }
-  }
-  return files;
-}
-
 await mkdir(stagingRoot, { recursive: true });
 await rm(stagingDirectory, { recursive: true, force: true });
 await cp(distDirectory, stagingDirectory, { recursive: true });
 
-const hashes = [];
-for (const filePath of (await filesUnder(stagingDirectory)).sort()) {
-  const digest = createHash("sha256").update(await readFile(filePath)).digest("hex");
-  hashes.push(`${digest}  ${relative(stagingDirectory, filePath).replaceAll("\\", "/")}`);
-}
+const packageInputManifest = await createPackageInputManifest(stagingDirectory);
 await writeFile(
   resolve(stagingRoot, `ruyi-translate-${packageJson.version}.sha256.txt`),
-  `${hashes.join("\n")}\n`,
+  packageInputManifest,
   "utf8",
 );
+const buildInputSha256 = createHash("sha256").update(packageInputManifest).digest("hex");
 
 process.stdout.write(
   [
     `已准备待打包目录：${stagingDirectory}`,
+    `构建输入清单 SHA-256：${buildInputSha256}`,
     "请在 uTools 开发者工具中选择该目录的 plugin.json，再使用“打包”生成签名 UPXS。",
     "此脚本不会把 ZIP 文件改名冒充 UPXS。",
   ].join("\n") + "\n",

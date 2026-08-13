@@ -87,6 +87,15 @@ dist
 artifacts/upxs-input/
 artifacts/*.upxs
 
+# Local evaluation inputs, model outputs and caches
+evaluation/cache/
+evaluation/private/
+evaluation/results/
+evaluation/evidence/
+evaluation/outputs/
+evaluation/cases/authorized-private/
+evaluation/reports/*.local.json
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js
