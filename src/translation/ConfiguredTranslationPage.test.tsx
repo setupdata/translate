@@ -190,6 +190,33 @@ const missingKeyState: RuntimeConfigurationState = {
 };
 
 describe("ConfiguredTranslationPage", () => {
+  it("keeps the primary translation task visible and starts optional controls collapsed", async () => {
+    const runtime: RuyiRuntimeBridge = {
+      ...currentTranslationMethods(),
+      getServiceConfiguration: vi.fn().mockResolvedValue(missingKeyState),
+      saveApiKey: vi.fn(),
+      startStandardTranslation: vi.fn(),
+      cancelTranslation: vi.fn(),
+      copyTranslation: vi.fn(() => ({ status: "copied" as const })),
+      pasteTranslation: vi.fn(() => ({ status: "pasted" as const })),
+    };
+
+    const { container } = render(
+      <ConfiguredTranslationPage autoStart={false} initialText="" runtime={runtime} />,
+    );
+
+    expect(await screen.findByRole("textbox", { name: "源文本" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "目标语言" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "打开设置" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "清空当前内容" })).toBeVisible();
+    expect(screen.getByText("附加要求").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("翻译选项").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("本次术语", { selector: "summary span" }).closest("details"))
+      .not.toHaveAttribute("open");
+    expect(container.querySelector(".source-character-count")).toHaveTextContent("0 / 10,000");
+  });
+
   it("keeps matched text and asks for the missing API key without sending", async () => {
     const sourceText = "  first line\n    second line  ";
     const runtime: RuyiRuntimeBridge = {

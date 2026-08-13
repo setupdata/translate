@@ -20,6 +20,9 @@ import {
 } from "./lib/evidence-v1.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
+const candidateVersion = JSON.parse(
+  await readFile(resolve(projectRoot, "package.json"), "utf8"),
+).version;
 const gitRevision = spawnSync("git", ["rev-parse", "HEAD"], {
   cwd: projectRoot,
   encoding: "utf8",
@@ -67,7 +70,7 @@ function evidenceRecords(evidenceType, count, payload = {}, idPrefix = evidenceT
       schemaVersion: "evaluation-evidence-record.v1",
       evidenceType,
       recordId: `${idPrefix}-${index}`,
-      candidateVersion: "0.1.0",
+      candidateVersion,
       datasetVersion: "dataset-v1",
       recordedAt: "2026-08-13T12:00:00.000Z",
       subjectId: `${idPrefix}-subject-${index}`,
@@ -199,7 +202,7 @@ function reportFor(cases) {
     schemaVersion: "evaluation-report.v1",
     reportId: "baseline-v1",
     evaluationVersion: "ruyi-evaluation-v1",
-    candidateVersion: "0.1.0",
+    candidateVersion,
     baselineVersion: "baseline-v1",
     evaluationDate: "2026-08-13",
     changeSummary: "Evidence verifier test fixture.",
@@ -376,11 +379,12 @@ function evidenceFixture(report, casesSource, cases) {
     ],
   };
   const artifactSources = {};
-  const attachmentSources = { "attachments/ruyi-translate-0.1.0.upxs": packageSource };
+  const packagePath = `attachments/ruyi-translate-${candidateVersion}.upxs`;
+  const attachmentSources = { [packagePath]: packageSource };
   const attachments = [
     {
       attachmentId: "signed-upxs",
-      path: "attachments/ruyi-translate-0.1.0.upxs",
+      path: packagePath,
       sha256: packageSha256,
       byteLength: packageSource.byteLength,
       kind: "upxs-package",
@@ -501,7 +505,7 @@ describe("evaluation evidence manifest", () => {
     ).toMatchObject({
       schemaVersion: "verified-evaluation-evidence.v1",
       evidenceId: "evidence-v1-test",
-      candidateVersion: "0.1.0",
+      candidateVersion,
       datasetVersion: "dataset-v1",
       caseCount: 1,
     });
@@ -747,7 +751,7 @@ describe("evaluation evidence manifest", () => {
       expect(manifest).toMatchObject({
         schemaVersion: "evaluation-evidence-manifest.v1",
         evidenceId: "generated-evidence-v1-test",
-        candidateVersion: "0.1.0",
+        candidateVersion,
         datasetVersion: "dataset-v1",
         commitSha: candidateCommitSha,
         buildInputSha256: "e".repeat(64),

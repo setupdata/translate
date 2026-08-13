@@ -614,6 +614,7 @@ export function ConfiguredTranslationPage({
       ? result.quality
       : undefined;
   const resultIsStale = snapshotStale;
+  const sourceCodePointCount = Array.from(sourceText.replace(/\r\n/gu, "\n")).length;
   const parallelAdvice = runtime.getParallelAccelerationAdvice(
     sourceText,
     configuration?.serviceConfiguration?.id,
@@ -704,18 +705,27 @@ export function ConfiguredTranslationPage({
           打开设置
         </button>
       </div>
-      <p className="task-summary">
-        目标语言：{targetLanguage.displayName ?? targetLanguage.modelLabel}
-        <span aria-hidden="true"> · </span>
-        质量模式：{qualityMode === "precision" ? "精译模式" : "标准模式"}
-      </p>
       {configuration?.serviceConfiguration?.maskedApiKey ? (
-        <p>
-          当前服务：{configuration.serviceConfiguration.name}（
-          <span>{configuration.serviceConfiguration.maskedApiKey}</span>）
+        <p className="task-summary visually-hidden">
+          当前服务：{configuration.serviceConfiguration.name}
+          <span aria-hidden="true"> · </span>
+          {targetLanguage.displayName ?? targetLanguage.modelLabel}
+          <span aria-hidden="true"> · </span>
+          {qualityMode === "precision" ? "精译模式" : "标准模式"}
+          <span className="visually-hidden">密钥</span>
+          <span className="visually-hidden">
+            {configuration.serviceConfiguration.maskedApiKey}
+          </span>
+        </p>
+      ) : configuration ? (
+        <p className="task-summary visually-hidden">
+          {targetLanguage.displayName ?? targetLanguage.modelLabel}
+          <span aria-hidden="true"> · </span>
+          {qualityMode === "precision" ? "精译模式" : "标准模式"}
         </p>
       ) : null}
       <form
+        className="translation-composer"
         onSubmit={(event) => {
           event.preventDefault();
           if (configuration && !isSwitchingService) {
@@ -734,117 +744,126 @@ export function ConfiguredTranslationPage({
           }
         }}
       >
-        {serviceConfigurations.length > 0 && (
-          <>
-            <label htmlFor="service-configuration">服务配置</label>
+        <div className="translation-primary-fields">
+          {serviceConfigurations.length > 0 && !confirmation && !referenceConfirmation ? (
+            <div className="translation-field translation-service-field">
+              <label htmlFor="service-configuration">服务配置</label>
+              <select
+                id="service-configuration"
+                value={configuration?.serviceConfiguration?.id ?? ""}
+                onChange={(event) => {
+                  const configurationId = event.target.value;
+                  if (result && result.status !== "completed" && result.status !== "failed") {
+                    runtime.cancelTranslation(taskId.current);
+                    setResult(null);
+                  }
+                  deferredActionGeneration.current += 1;
+                  const selectionGeneration = ++serviceSelectionGeneration.current;
+                  thinkingUpdateGeneration.current += 1;
+                  setIsSwitchingService(true);
+                  setErrorMessage("");
+                  void runtime
+                    .setCurrentServiceConfiguration(configurationId)
+                    .then((serviceState) => {
+                      if (
+                        !mounted.current ||
+                        selectionGeneration !== serviceSelectionGeneration.current
+                      ) {
+                        return null;
+                      }
+                      setServiceConfigurations(serviceState.serviceConfigurations);
+                      return runtime.getServiceConfiguration(configurationId);
+                    })
+                    .then((selectedConfiguration) => {
+                      if (
+                        !selectedConfiguration ||
+                        !mounted.current ||
+                        selectionGeneration !== serviceSelectionGeneration.current
+                      ) {
+                        return;
+                      }
+                      setConfiguration(selectedConfiguration);
+                      setThinkingEnabled(
+                        Boolean(selectedConfiguration.serviceConfiguration?.thinkingEnabled),
+                      );
+                      const latestInputs = runtime.getCurrentTranslation()?.inputs;
+                      publishInputs({
+                        ...(latestInputs ?? currentInputs()),
+                        serviceConfigurationId: configurationId,
+                        thinkingEnabled: Boolean(
+                          selectedConfiguration.serviceConfiguration?.thinkingEnabled,
+                        ),
+                      });
+                      setIsSwitchingService(false);
+                    })
+                    .catch(() => {
+                      if (
+                        mounted.current &&
+                        selectionGeneration === serviceSelectionGeneration.current
+                      ) {
+                        setIsSwitchingService(false);
+                        setErrorMessage("服务配置切换失败。");
+                      }
+                    });
+                }}
+              >
+                {serviceConfigurations.map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          <div className="translation-field translation-domain-field">
+            <label htmlFor="domain-profile">行业配置</label>
             <select
-              id="service-configuration"
-              value={configuration?.serviceConfiguration?.id ?? ""}
+              id="domain-profile"
+              value={domainProfileId ?? ""}
               onChange={(event) => {
-                const configurationId = event.target.value;
-                if (result && result.status !== "completed" && result.status !== "failed") {
-                  runtime.cancelTranslation(taskId.current);
-                  setResult(null);
-                }
+                const nextDomainProfileId = event.target.value || null;
+                const selectionGeneration = ++domainSelectionGeneration.current;
                 deferredActionGeneration.current += 1;
-                const selectionGeneration = ++serviceSelectionGeneration.current;
-                thinkingUpdateGeneration.current += 1;
-                setIsSwitchingService(true);
-                setErrorMessage("");
+                setDomainProfileId(nextDomainProfileId);
+                setReferenceTranslationIds(null);
                 void runtime
-                  .setCurrentServiceConfiguration(configurationId)
-                  .then((serviceState) => {
+                  .setCurrentDomainProfile(nextDomainProfileId)
+                  .then((terminology) => {
                     if (
                       !mounted.current ||
-                      selectionGeneration !== serviceSelectionGeneration.current
-                    ) {
-                      return null;
-                    }
-                    setServiceConfigurations(serviceState.serviceConfigurations);
-                    return runtime.getServiceConfiguration(configurationId);
-                  })
-                  .then((selectedConfiguration) => {
-                    if (
-                      !selectedConfiguration ||
-                      !mounted.current ||
-                      selectionGeneration !== serviceSelectionGeneration.current
-                    ) {
-                      return;
-                    }
-                    setConfiguration(selectedConfiguration);
-                    setThinkingEnabled(
-                      Boolean(selectedConfiguration.serviceConfiguration?.thinkingEnabled),
-                    );
+                      selectionGeneration !== domainSelectionGeneration.current
+                    ) return;
+                    setDomainProfiles(terminology.domainProfiles);
                     const latestInputs = runtime.getCurrentTranslation()?.inputs;
                     publishInputs({
                       ...(latestInputs ?? currentInputs()),
-                      serviceConfigurationId: configurationId,
-                      thinkingEnabled: Boolean(
-                        selectedConfiguration.serviceConfiguration?.thinkingEnabled,
-                      ),
+                      domainProfileId: nextDomainProfileId,
+                      referenceTranslationIds: null,
                     });
-                    setIsSwitchingService(false);
                   })
                   .catch(() => {
                     if (
                       mounted.current &&
-                      selectionGeneration === serviceSelectionGeneration.current
-                    ) {
-                      setIsSwitchingService(false);
-                      setErrorMessage("服务配置切换失败。");
-                    }
+                      selectionGeneration === domainSelectionGeneration.current
+                    ) setErrorMessage("行业配置切换失败。");
                   });
               }}
             >
-              {serviceConfigurations.map((service) => (
-                <option key={service.id} value={service.id}>
-                  {service.name}
+              <option value="">不使用行业配置</option>
+              {domainProfiles.map((domainProfile) => (
+                <option value={domainProfile.id} key={domainProfile.id}>
+                  {domainProfile.name}
                 </option>
               ))}
             </select>
-          </>
-        )}
-        <label htmlFor="domain-profile">行业配置</label>
-        <select
-          id="domain-profile"
-          value={domainProfileId ?? ""}
-          onChange={(event) => {
-            const nextDomainProfileId = event.target.value || null;
-            const selectionGeneration = ++domainSelectionGeneration.current;
-            deferredActionGeneration.current += 1;
-            setDomainProfileId(nextDomainProfileId);
-            setReferenceTranslationIds(null);
-            void runtime
-              .setCurrentDomainProfile(nextDomainProfileId)
-              .then((terminology) => {
-                if (
-                  !mounted.current ||
-                  selectionGeneration !== domainSelectionGeneration.current
-                ) return;
-                setDomainProfiles(terminology.domainProfiles);
-                const latestInputs = runtime.getCurrentTranslation()?.inputs;
-                publishInputs({
-                  ...(latestInputs ?? currentInputs()),
-                  domainProfileId: nextDomainProfileId,
-                  referenceTranslationIds: null,
-                });
-              })
-              .catch(() => {
-                if (
-                  mounted.current &&
-                  selectionGeneration === domainSelectionGeneration.current
-                ) setErrorMessage("行业配置切换失败。");
-              });
-          }}
-        >
-          <option value="">不使用行业配置</option>
-          {domainProfiles.map((domainProfile) => (
-            <option value={domainProfile.id} key={domainProfile.id}>
-              {domainProfile.name}
-            </option>
-          ))}
-        </select>
-        <label htmlFor="source-text">源文本</label>
+          </div>
+        </div>
+        <div className="source-field-heading">
+          <label htmlFor="source-text">源文本</label>
+          <span className="source-character-count">
+            {sourceCodePointCount.toLocaleString("en-US")} / 10,000
+          </span>
+        </div>
         <textarea
           id="source-text"
           value={sourceText}
@@ -889,50 +908,69 @@ export function ConfiguredTranslationPage({
             }
           }}
         />
-        <label htmlFor="target-language">目标语言</label>
-        <select
-          id="target-language"
-          value={targetLanguage.id}
-          onChange={(event) => {
-            const nextTargetLanguage =
-              TARGET_LANGUAGES.find(
-                (candidate) => candidate.id === event.target.value,
-              ) ?? INITIAL_TARGET_LANGUAGE;
-            deferredActionGeneration.current += 1;
-            setTargetLanguage(nextTargetLanguage);
-            setReferenceTranslationIds(null);
-            publishInputs(
-              currentInputs(
-                sourceText,
-                nextTargetLanguage,
-                additionalRequirements,
-                configuration?.serviceConfiguration?.id ?? null,
-                domainProfileId,
-                taskTerms,
-                null,
-              ),
-            );
-          }}
-        >
-          {TARGET_LANGUAGES.map((language) => (
-            <option key={language.id} value={language.id}>
-              {language.displayName}
-            </option>
-          ))}
-        </select>
-        <label htmlFor="additional-requirements">附加翻译要求</label>
-        <textarea
-          id="additional-requirements"
-          value={additionalRequirements}
-          onChange={(event) => {
-            const nextRequirements = event.target.value;
-            deferredActionGeneration.current += 1;
-            setAdditionalRequirements(nextRequirements);
-            publishInputs(
-              currentInputs(sourceText, targetLanguage, nextRequirements),
-            );
-          }}
-        />
+        <div className="translation-field target-language-field">
+          <label htmlFor="target-language">目标语言</label>
+          <select
+            id="target-language"
+            value={targetLanguage.id}
+            onChange={(event) => {
+              const nextTargetLanguage =
+                TARGET_LANGUAGES.find(
+                  (candidate) => candidate.id === event.target.value,
+                ) ?? INITIAL_TARGET_LANGUAGE;
+              deferredActionGeneration.current += 1;
+              setTargetLanguage(nextTargetLanguage);
+              setReferenceTranslationIds(null);
+              publishInputs(
+                currentInputs(
+                  sourceText,
+                  nextTargetLanguage,
+                  additionalRequirements,
+                  configuration?.serviceConfiguration?.id ?? null,
+                  domainProfileId,
+                  taskTerms,
+                  null,
+                ),
+              );
+            }}
+          >
+            {TARGET_LANGUAGES.map((language) => (
+              <option key={language.id} value={language.id}>
+                {language.displayName}
+              </option>
+            ))}
+          </select>
+        </div>
+        <details className="translation-option-group">
+          <summary>
+            <span>附加要求</span>
+            <small>{additionalRequirements.length > 0 ? "已填写" : "可选"}</small>
+          </summary>
+          <div className="translation-option-content">
+            <label htmlFor="additional-requirements">附加翻译要求</label>
+            <textarea
+              id="additional-requirements"
+              value={additionalRequirements}
+              onChange={(event) => {
+                const nextRequirements = event.target.value;
+                deferredActionGeneration.current += 1;
+                setAdditionalRequirements(nextRequirements);
+                publishInputs(
+                  currentInputs(sourceText, targetLanguage, nextRequirements),
+                );
+              }}
+            />
+          </div>
+        </details>
+        <details className="translation-option-group">
+          <summary>
+            <span>翻译选项</span>
+            <small>
+              {qualityMode === "precision" ? "精译模式" : "标准模式"}
+              {parallelAcceleration ? ` · 并发 ${parallelConcurrency}` : ""}
+            </small>
+          </summary>
+          <div className="translation-option-content translation-settings-grid">
         <fieldset className="quality-mode-settings">
           <legend>翻译质量</legend>
           <label htmlFor="quality-mode">质量模式</label>
@@ -1073,8 +1111,16 @@ export function ConfiguredTranslationPage({
             </p>
           ) : null}
         </fieldset>
+          </div>
+        </details>
+        <details className="translation-option-group">
+          <summary>
+            <span>本次术语</span>
+            <small>{taskTerms.length > 0 ? `${taskTerms.length} 条` : "可选"}</small>
+          </summary>
+          <div className="translation-option-content">
         <fieldset className="task-terms-editor">
-          <legend>本次术语</legend>
+          <legend className="visually-hidden">本次术语编辑器</legend>
           <p>本次术语优先于行业术语和通用术语，只保留在当前翻译内存中。</p>
           {taskTerms.map((term, index) => (
             <div className="task-term-row" key={`task-term-${index}`}>
@@ -1133,10 +1179,19 @@ export function ConfiguredTranslationPage({
             新增本次术语
           </button>
         </fieldset>
-        <button type="submit" disabled={!configuration || isSwitchingService}>
-          {qualityMode === "precision" ? "开始精译" : "开始翻译"}
-        </button>
-        <button
+          </div>
+        </details>
+        <div className="translation-submit-row">
+          <span className="keyboard-hint">Ctrl/⌘ + Enter · 当前内容仅存本进程</span>
+          <button
+            className="primary-translation-action"
+            type="submit"
+            disabled={!configuration || isSwitchingService}
+          >
+            {qualityMode === "precision" ? "开始精译" : "开始翻译"}
+          </button>
+          <button
+          className="secondary-action"
           type="button"
           onClick={() => {
             requestGeneration.current += 1;
@@ -1179,8 +1234,9 @@ export function ConfiguredTranslationPage({
         >
           清空当前内容
         </button>
+        </div>
       </form>
-      <p className="current-translation-note">
+      <p className="current-translation-note visually-hidden">
         当前内容只保留在本次插件进程内；清空后无法恢复。
       </p>
 

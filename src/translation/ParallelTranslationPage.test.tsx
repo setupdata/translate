@@ -25,7 +25,9 @@ describe("ConfiguredTranslationPage parallel acceleration", () => {
       />,
     );
 
-    const acceleration = await screen.findByRole("checkbox", { name: "并发加速" });
+    await screen.findByText(/当前服务/u);
+    await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
+    const acceleration = screen.getByRole("checkbox", { name: "并发加速" });
     const concurrency = screen.getByRole("combobox", { name: "并发数" });
     expect(acceleration).not.toBeChecked();
     expect(concurrency).toBeDisabled();
@@ -43,6 +45,7 @@ describe("ConfiguredTranslationPage parallel acceleration", () => {
   });
 
   it("suggests acceleration for a long source without enabling it", async () => {
+    const user = userEvent.setup();
     const runtime = createRuntimeStub();
     render(
       <ConfiguredTranslationPage
@@ -52,6 +55,8 @@ describe("ConfiguredTranslationPage parallel acceleration", () => {
       />,
     );
 
+    await screen.findByText(/当前服务/u);
+    await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
     expect(
       await screen.findByText(/当前服务暂无速度样本.*建议手动开启并发加速/u),
     ).toBeInTheDocument();
@@ -92,7 +97,9 @@ describe("ConfiguredTranslationPage parallel acceleration", () => {
       />,
     );
 
-    await user.click(await screen.findByRole("checkbox", { name: "并发加速" }));
+    await screen.findByText(/当前服务/u);
+    await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
+    await user.click(screen.getByRole("checkbox", { name: "并发加速" }));
     await user.click(screen.getByRole("button", { name: "开始翻译" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent(
@@ -102,6 +109,7 @@ describe("ConfiguredTranslationPage parallel acceleration", () => {
   });
 
   it("uses the stored speed summary only for an estimate", async () => {
+    const user = userEvent.setup();
     const state = {
       ...configuredRuntimeState,
       serviceConfiguration: {
@@ -134,6 +142,8 @@ describe("ConfiguredTranslationPage parallel acceleration", () => {
       />,
     );
 
+    await screen.findByText(/当前服务/u);
+    await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
     expect(await screen.findByText(/预计约 47 秒.*建议手动开启并发加速/u)).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "并发加速" })).not.toBeChecked();
   });

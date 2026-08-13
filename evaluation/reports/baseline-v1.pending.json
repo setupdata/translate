@@ -2,7 +2,7 @@
   "schemaVersion": "evaluation-report.v1",
   "reportId": "baseline-v1",
   "evaluationVersion": "ruyi-evaluation-v1",
-  "candidateVersion": "0.1.0",
+  "candidateVersion": "0.1.1",
   "baselineVersion": null,
   "evaluationDate": "2026-08-13",
   "changeSummary": "仓库已建立评测格式和发布门槛计算，真实基线尚未采集。",

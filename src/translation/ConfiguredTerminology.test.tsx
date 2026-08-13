@@ -125,6 +125,7 @@ describe("ConfiguredTranslationPage terminology", () => {
     await user.selectOptions(await screen.findByLabelText("行业配置"), "energy-profile");
     expect(setCurrentDomainProfile).toHaveBeenCalledWith("energy-profile");
     expect(startStandardTranslation).not.toHaveBeenCalled();
+    await user.click(screen.getByText("本次术语", { selector: "summary span" }));
     await user.click(screen.getByRole("button", { name: "新增本次术语" }));
     await user.type(screen.getByLabelText("本次术语源术语"), "power grid");
     await user.type(screen.getByLabelText("本次术语译法"), "电网");
@@ -174,6 +175,7 @@ describe("ConfiguredTranslationPage terminology", () => {
     expect(screen.getByText(/同一优先级的严格术语/u)).toHaveAttribute("role", "alert");
     await user.click(choiceButton);
 
+    await user.click(screen.getByText("本次术语", { selector: "summary span" }));
     expect(screen.getByLabelText("本次术语源术语")).toHaveValue("power grid");
     expect(screen.getByLabelText("本次术语译法")).toHaveValue("电网");
     expect(startStandardTranslation).toHaveBeenCalledOnce();

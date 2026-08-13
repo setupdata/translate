@@ -44,6 +44,7 @@ test("selects precision mode, remembers DeepSeek thinking, shows the call plan, 
   );
 
   await screen.findByText(/当前服务：DeepSeek Flash/u);
+  await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
   await user.selectOptions(screen.getByLabelText("质量模式"), "precision");
   expect(screen.getByText(/1 次分析.*1 次翻译.*2 次并行审校.*最多 1 次修订/u)).toBeVisible();
   expect(startTranslation).not.toHaveBeenCalled();
@@ -115,6 +116,7 @@ test("does not silently fall back to standard translation when the runtime lacks
     />,
   );
   await screen.findByText(/当前服务：DeepSeek Flash/u);
+  await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
   await user.selectOptions(screen.getByLabelText("质量模式"), "precision");
 
   await user.click(screen.getByRole("button", { name: "开始精译" }));
@@ -155,6 +157,7 @@ test("shows the failed precision stage and offers retry or an explicit switch to
     />,
   );
   await screen.findByText(/当前服务：DeepSeek Flash/u);
+  await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
   await user.selectOptions(screen.getByLabelText("质量模式"), "precision");
   await user.click(screen.getByRole("button", { name: "开始精译" }));
 
@@ -209,6 +212,7 @@ test("shows the concrete precision review category", async () => {
     />,
   );
   await screen.findByText(/当前服务：DeepSeek Flash/u);
+  await user.click(screen.getByText("翻译选项", { selector: "summary span" }));
   await user.selectOptions(screen.getByLabelText("质量模式"), "precision");
   await user.click(screen.getByRole("button", { name: "开始精译" }));
 
