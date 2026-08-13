@@ -76,6 +76,7 @@ describe("Ruyi runtime", () => {
         },
         qualityMode: "standard",
         additionalRequirements: "",
+        backgroundNotificationsEnabled: true,
       },
     });
     expect(plainStorage.values.size).toBe(1);

@@ -47,9 +47,36 @@ const custom: ServiceConfigurationView = {
 const initialState: ServiceConfigurationsState = {
   currentServiceConfigurationId: official.id,
   serviceConfigurations: [official, custom],
+  backgroundNotificationsEnabled: true,
 };
 
 describe("ServiceSettingsPage", () => {
+  it("shows the default-on background notification preference and persists disabling it", async () => {
+    const disabledState = {
+      ...initialState,
+      backgroundNotificationsEnabled: false,
+    };
+    const setBackgroundNotificationsEnabled = vi.fn(async () => disabledState);
+    const runtime = createRuntimeStub({
+      getServiceConfigurations: vi.fn(async () => initialState),
+      setBackgroundNotificationsEnabled,
+    });
+
+    render(<ServiceSettingsPage runtime={runtime} />);
+
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "后台翻译完成后显示系统通知",
+    });
+    expect(checkbox).toBeChecked();
+    await userEvent.click(checkbox);
+
+    await waitFor(() =>
+      expect(setBackgroundNotificationsEnabled).toHaveBeenCalledWith(false),
+    );
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText(/后台继续和系统通知都不保证必定完成或送达/u)).toBeInTheDocument();
+  });
+
   it("loads saved configurations without testing connections or fetching models", async () => {
     const getServiceConfigurations = vi.fn(async () => initialState);
     const testServiceConnection = vi.fn();

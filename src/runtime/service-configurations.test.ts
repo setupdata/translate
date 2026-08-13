@@ -131,6 +131,7 @@ describe("Service configuration management", () => {
     expect(state).toEqual({
       currentServiceConfigurationId: null,
       serviceConfigurations: [],
+      backgroundNotificationsEnabled: true,
     });
     await expect(runtime.getServiceConfiguration()).resolves.toMatchObject({
       serviceConfiguration: null,

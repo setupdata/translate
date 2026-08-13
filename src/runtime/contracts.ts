@@ -53,6 +53,7 @@ export type ServiceConfigurationInput = {
 export type ServiceConfigurationsState = {
   currentServiceConfigurationId: string | null;
   serviceConfigurations: ServiceConfigurationView[];
+  backgroundNotificationsEnabled?: boolean;
 };
 
 export type RuntimeConfigurationState = {
@@ -61,6 +62,7 @@ export type RuntimeConfigurationState = {
     targetLanguage: TargetLanguage & { displayName: string };
     qualityMode: TranslationQualityMode;
     additionalRequirements: string;
+    backgroundNotificationsEnabled?: boolean;
   };
 };
 
@@ -505,6 +507,9 @@ export interface RuyiRuntimeBridge {
   ): Promise<ServiceConfigurationsState>;
   deleteServiceApiKey(configurationId: string): Promise<ServiceConfigurationsState>;
   clearServicePerformanceData(configurationId: string): Promise<ServiceConfigurationsState>;
+  setBackgroundNotificationsEnabled?(
+    enabled: boolean,
+  ): Promise<ServiceConfigurationsState>;
   setServiceThinkingMode?(
     configurationId: string,
     enabled: boolean,

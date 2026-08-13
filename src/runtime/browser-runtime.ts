@@ -27,6 +27,7 @@ function unavailableRuntime(): RuyiRuntimeBridge {
     saveServiceApiKey: unavailable,
     deleteServiceApiKey: unavailable,
     clearServicePerformanceData: unavailable,
+    setBackgroundNotificationsEnabled: unavailable,
     setServiceThinkingMode: unavailable,
     getParallelAccelerationAdvice: () => ({
       suggested: false,

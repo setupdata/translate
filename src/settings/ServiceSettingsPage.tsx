@@ -656,6 +656,32 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
         </section>
       )}
 
+      <section
+        aria-labelledby="background-notifications-heading"
+        className="configuration-card"
+      >
+        <h2 id="background-notifications-heading">后台翻译与通知</h2>
+        <label className="checkbox-label">
+          <input
+            checked={state?.backgroundNotificationsEnabled !== false}
+            disabled={!state}
+            type="checkbox"
+            onChange={(event) =>
+              void runMutation(() =>
+                runtime.setBackgroundNotificationsEnabled!(event.target.checked),
+              )
+            }
+          />
+          后台翻译完成后显示系统通知
+        </label>
+        <p>
+          普通隐藏插件时，当前请求会在插件进程仍然存活的前提下尽力继续，无数据超时和十分钟总时限仍然生效。通知只显示完成、失败或超时等通用状态；点击通知会返回当前翻译，不会自动复制或粘贴。
+        </p>
+        <p>
+          后台继续和系统通知都不保证必定完成或送达。断网、退出 uTools、结束插件进程、系统休眠、强制终止或更新插件都可能中断请求；使用“清空当前内容”会主动取消当前请求。
+        </p>
+      </section>
+
       <TerminologySettingsSection runtime={runtime} />
 
       <section

@@ -75,6 +75,7 @@ const DEFAULTS = Object.freeze({
   }),
   qualityMode: "standard",
   additionalRequirements: "",
+  backgroundNotificationsEnabled: true,
 });
 
 function createInitialSettings(servicePreset = DEEPSEEK_FLASH_PRESET) {
@@ -92,6 +93,7 @@ function createInitialSettings(servicePreset = DEEPSEEK_FLASH_PRESET) {
       targetLanguage: { ...DEFAULTS.targetLanguage },
       qualityMode: DEFAULTS.qualityMode,
       additionalRequirements: DEFAULTS.additionalRequirements,
+      backgroundNotificationsEnabled: DEFAULTS.backgroundNotificationsEnabled,
     },
   };
 }
@@ -460,6 +462,34 @@ function createRuyiRuntime({
   let currentCopyCandidate = null;
   let currentTranslation = null;
   let currentTranslationRevision = 0;
+  let pluginHidden = false;
+  let processEnding = false;
+
+  function handlePluginEnter() {
+    pluginHidden = false;
+    processEnding = false;
+  }
+
+  function handlePluginOut(isKill) {
+    processEnding = Boolean(isKill);
+    pluginHidden = !processEnding;
+    if (processEnding) cancelAllCurrentWork();
+  }
+
+  if (typeof hostActions.onPluginEnter === "function") {
+    try {
+      hostActions.onPluginEnter(handlePluginEnter);
+    } catch {
+      // Host lifecycle callbacks are best effort and must not prevent startup.
+    }
+  }
+  if (typeof hostActions.onPluginOut === "function") {
+    try {
+      hostActions.onPluginOut(handlePluginOut);
+    } catch {
+      // Host lifecycle callbacks are best effort and must not prevent startup.
+    }
+  }
 
   function publishCurrentTranslation(next) {
     currentTranslationRevision += 1;
@@ -636,6 +666,41 @@ function createRuyiRuntime({
       result: freezeDeep(result),
       partialTranslation,
     });
+  }
+
+  function backgroundNotificationsEnabled() {
+    const settings = readSettings();
+    return !settings.defaults || settings.defaults.backgroundNotificationsEnabled !== false;
+  }
+
+  function notifyBackgroundTask(task, outcome) {
+    if (
+      !task ||
+      task.notificationSent ||
+      !pluginHidden ||
+      processEnding ||
+      typeof hostActions.showTranslationNotification !== "function" ||
+      !currentTranslation ||
+      !currentTranslation.task ||
+      currentTranslation.task.taskId !== task.taskId
+    ) {
+      return;
+    }
+    try {
+      if (!backgroundNotificationsEnabled()) return;
+      task.notificationSent = true;
+      hostActions.showTranslationNotification(outcome);
+    } catch {
+      // System notifications are best effort and never affect task results.
+    }
+  }
+
+  function notifyBackgroundTaskResult(task, code) {
+    if (code === "cancelled") return;
+    notifyBackgroundTask(
+      task,
+      code === "completed" ? "completed" : code === "timeout" ? "timeout" : "failed",
+    );
   }
 
   function readSettings() {
@@ -1114,6 +1179,8 @@ function createRuyiRuntime({
         typeof settings.defaults.additionalRequirements === "string"
           ? settings.defaults.additionalRequirements
           : "",
+      backgroundNotificationsEnabled:
+        !settings.defaults || settings.defaults.backgroundNotificationsEnabled !== false,
     };
   }
 
@@ -1126,6 +1193,8 @@ function createRuyiRuntime({
       serviceConfigurations: configurationsIn(settings).map((configuration) =>
         serviceConfigurationView(configuration, apiKeyFor(configuration.id)),
       ),
+      backgroundNotificationsEnabled:
+        !settings.defaults || settings.defaults.backgroundNotificationsEnabled !== false,
     });
   }
 
@@ -1204,6 +1273,16 @@ function createRuyiRuntime({
       throw configurationError(null, "服务配置不存在。");
     }
     configuration.performanceSamples = [];
+    plainStorage.setItem(SETTINGS_KEY, settings);
+    return serviceConfigurationsState(settings);
+  }
+
+  async function setBackgroundNotificationsEnabled(enabled) {
+    const settings = readSettings();
+    settings.defaults = {
+      ...(settings.defaults || {}),
+      backgroundNotificationsEnabled: Boolean(enabled),
+    };
     plainStorage.setItem(SETTINGS_KEY, settings);
     return serviceConfigurationsState(settings);
   }
@@ -1979,6 +2058,7 @@ function createRuyiRuntime({
       taskId: request.taskId,
       configurationId: configuration.id,
       controller,
+      notificationSent: false,
     };
     activeTask = task;
     currentCopyCandidate = null;
@@ -2151,6 +2231,7 @@ function createRuyiRuntime({
         ...(parallel ? { parallel } : {}),
       });
       storeCurrentResult(request.taskId, result, "completed", translation);
+      notifyBackgroundTaskResult(task, "completed");
       return result;
     }
     function failStage(
@@ -2200,6 +2281,7 @@ function createRuyiRuntime({
         };
       }
       storeCurrentResult(request.taskId, result, "failed", partialTranslation);
+      notifyBackgroundTaskResult(task, code);
       return result;
     }
 
@@ -2958,6 +3040,7 @@ function createRuyiRuntime({
       taskId: request.taskId,
       configurationId: configuration.id,
       controller,
+      notificationSent: false,
     };
     activeTask = task;
     currentCopyCandidate = null;
@@ -3271,6 +3354,7 @@ function createRuyiRuntime({
         ...(parallel ? { parallel } : {}),
       });
       storeCurrentResult(request.taskId, result, "completed", translation);
+      notifyBackgroundTaskResult(task, "completed");
       return result;
     } catch (error) {
       const code =
@@ -3371,6 +3455,7 @@ function createRuyiRuntime({
         "failed",
         partialTranslation,
       );
+      notifyBackgroundTaskResult(task, code);
       return result;
     } finally {
       if (taskTimeout !== null) clearTimeout(taskTimeout);
@@ -3502,6 +3587,7 @@ function createRuyiRuntime({
     saveServiceApiKey,
     deleteServiceApiKey,
     clearServicePerformanceData,
+    setBackgroundNotificationsEnabled,
     setServiceThinkingMode,
     getParallelAccelerationAdvice,
     getTranslationCallPlan,

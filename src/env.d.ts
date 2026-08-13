@@ -10,6 +10,8 @@ interface Window {
   ruyiTranslation?: RuyiTranslationBridge;
   utools?: {
     onPluginEnter(callback: (action: UToolsPluginEnterAction) => void): void;
+    onPluginOut(callback: (isKill: boolean) => void): void;
+    showNotification(body: string, clickFeatureCode?: string): void;
   };
 }
 

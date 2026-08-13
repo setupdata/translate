@@ -30,8 +30,19 @@ export const configuredRuntimeState: RuntimeConfigurationState = {
     },
     qualityMode: "standard",
     additionalRequirements: "",
+    backgroundNotificationsEnabled: true,
   },
 };
+
+function configuredServiceState(
+  backgroundNotificationsEnabled = true,
+): import("../runtime/contracts").ServiceConfigurationsState {
+  return {
+    currentServiceConfigurationId: "deepseek-flash",
+    serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
+    backgroundNotificationsEnabled,
+  };
+}
 
 export function createRuntimeStub(
   overrides: Partial<RuyiRuntimeBridge> = {},
@@ -107,47 +118,23 @@ export function createRuntimeStub(
       bytes: new Uint8Array(),
     }),
     getServiceConfiguration: async () => configuredRuntimeState,
-    getServiceConfigurations: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    saveServiceConfiguration: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    duplicateServiceConfiguration: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    moveServiceConfiguration: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    setCurrentServiceConfiguration: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    deleteServiceConfiguration: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    saveServiceApiKey: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    deleteServiceApiKey: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
-    clearServicePerformanceData: async () => ({
-      currentServiceConfigurationId: "deepseek-flash",
-      serviceConfigurations: [configuredRuntimeState.serviceConfiguration!],
-    }),
+    getServiceConfigurations: async () => configuredServiceState(),
+    saveServiceConfiguration: async () => configuredServiceState(),
+    duplicateServiceConfiguration: async () => configuredServiceState(),
+    moveServiceConfiguration: async () => configuredServiceState(),
+    setCurrentServiceConfiguration: async () => configuredServiceState(),
+    deleteServiceConfiguration: async () => configuredServiceState(),
+    saveServiceApiKey: async () => configuredServiceState(),
+    deleteServiceApiKey: async () => configuredServiceState(),
+    clearServicePerformanceData: async () => configuredServiceState(),
+    setBackgroundNotificationsEnabled: async (enabled) =>
+      configuredServiceState(enabled),
     setServiceThinkingMode: async (_configurationId, enabled) => ({
       currentServiceConfigurationId: "deepseek-flash",
       serviceConfigurations: [
         { ...configuredRuntimeState.serviceConfiguration!, thinkingEnabled: enabled },
       ],
+      backgroundNotificationsEnabled: true,
     }),
     getParallelAccelerationAdvice: (sourceText) => ({
       suggested: Array.from(sourceText.replace(/\r\n/gu, "\n")).length > 4_000,
