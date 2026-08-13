@@ -83,6 +83,10 @@ out
 dist
 .output
 
+# uTools developer-tool staging and signed local packages
+artifacts/upxs-input/
+artifacts/*.upxs
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js

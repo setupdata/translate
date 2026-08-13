@@ -48,6 +48,9 @@ export function createRuntimeStub(
   overrides: Partial<RuyiRuntimeBridge> = {},
 ): RuyiRuntimeBridge {
   const stub: RuyiRuntimeBridge = {
+    subscribePluginEntry: () => () => undefined,
+    openSettings: () => false,
+    configureGlobalShortcut: () => false,
     getTerminologyState: async () => ({
       termbases: [],
       domainProfiles: [],

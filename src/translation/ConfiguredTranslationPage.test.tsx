@@ -234,12 +234,14 @@ describe("ConfiguredTranslationPage", () => {
 
   it("keeps the source and guides the user when no service configuration is usable", async () => {
     const sourceText = "  source stays here  ";
+    const openSettings = vi.fn(() => true);
     const noConfigurationState: RuntimeConfigurationState = {
       ...missingKeyState,
       serviceConfiguration: null,
     };
     const runtime: RuyiRuntimeBridge = {
       ...currentTranslationMethods(),
+      openSettings,
       getServiceConfiguration: vi.fn().mockResolvedValue(noConfigurationState),
       saveApiKey: vi.fn(),
       startStandardTranslation: vi.fn().mockResolvedValue({
@@ -268,6 +270,10 @@ describe("ConfiguredTranslationPage", () => {
     expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue(
       sourceText,
     );
+    expect(screen.getByRole("alert")).toHaveTextContent("需要服务配置");
+    await userEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    expect(openSettings).toHaveBeenCalledOnce();
+    expect(screen.getByRole("status")).toHaveTextContent("正在打开如意翻译设置");
   });
 
   it("saves the key, shows only its mask, and presents the send preview", async () => {
@@ -388,9 +394,9 @@ describe("ConfiguredTranslationPage", () => {
       />,
     );
 
-    await user.click(
-      await screen.findByRole("button", { name: "取消" }),
-    );
+    const cancel = await screen.findByRole("button", { name: "取消" });
+    await waitFor(() => expect(cancel).toHaveFocus());
+    await user.keyboard("{Escape}");
 
     expect(
       screen.queryByRole("dialog", { name: "确认发送翻译数据" }),
@@ -456,6 +462,7 @@ describe("ConfiguredTranslationPage", () => {
     expect(await screen.findByRole("region", { name: "译文" })).toHaveTextContent(
       "你好",
     );
+    expect(screen.getByRole("status")).toHaveTextContent("翻译已完成");
     expect(screen.getByRole("textbox", { name: "源文本" })).toHaveValue(
       sourceText,
     );
@@ -776,7 +783,7 @@ describe("ConfiguredTranslationPage", () => {
     expect(selector).toHaveValue(customService.id);
   });
 
-  it("dismisses an old send confirmation when the service changes", async () => {
+  it("requires dismissing the send confirmation before the service can change", async () => {
     const user = userEvent.setup();
     const configuredOfficial = {
       ...missingKeyService,
@@ -827,6 +834,8 @@ describe("ConfiguredTranslationPage", () => {
     expect(
       await screen.findByRole("dialog", { name: "确认发送翻译数据" }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "服务配置" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
 
     await user.selectOptions(
       screen.getByRole("combobox", { name: "服务配置" }),
@@ -1408,6 +1417,7 @@ describe("ConfiguredTranslationPage", () => {
 
     await user.keyboard("{Control>}{Enter}{/Control}");
     expect(startStandardTranslation).toHaveBeenCalledOnce();
+    expect(source).toHaveFocus();
     vi.mocked(runtime.cancelTranslation).mockClear();
     await user.keyboard("{Escape}");
     expect(runtime.cancelTranslation).toHaveBeenCalledOnce();

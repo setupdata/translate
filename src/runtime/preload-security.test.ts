@@ -80,6 +80,7 @@ describe("preload storage boundary", () => {
         "getTerminologyState",
         "commitTermbaseCsv",
         "moveServiceConfiguration",
+        "openSettings",
         "pasteTranslation",
         "previewTermbaseCsv",
         "discardTermbaseCsvPreview",
@@ -96,9 +97,11 @@ describe("preload storage boundary", () => {
         "setServiceThinkingMode",
         "startTranslation",
         "startStandardTranslation",
+        "subscribePluginEntry",
         "subscribeCurrentTranslation",
         "testServiceConnection",
         "updateCurrentTranslationInputs",
+        "configureGlobalShortcut",
       ].sort(),
     );
     expect(JSON.stringify(runtime)).not.toMatch(/dbStorage|dbCryptoStorage|Authorization/u);
@@ -110,6 +113,8 @@ describe("preload storage boundary", () => {
     const onPluginEnter = vi.fn();
     const onPluginOut = vi.fn();
     const showNotification = vi.fn();
+    const redirect = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
+    const redirectHotKeySetting = vi.fn();
     const copyText = vi.fn();
     const hideMainWindowPasteText = vi.fn();
     let hostActions: Record<string, unknown> | undefined;
@@ -132,6 +137,8 @@ describe("preload storage boundary", () => {
         onPluginEnter,
         onPluginOut,
         showNotification,
+        redirect,
+        redirectHotKeySetting,
         copyText,
         hideMainWindowPasteText,
       },
@@ -150,6 +157,16 @@ describe("preload storage boundary", () => {
     (hostActions?.onPluginOut as (handler: (isKill: boolean) => void) => void)(outHandler);
     expect(onPluginEnter).toHaveBeenCalledWith(enterHandler);
     expect(onPluginOut).toHaveBeenCalledWith(outHandler);
+    expect((hostActions?.openSettings as () => boolean)()).toBe(true);
+    expect((hostActions?.openSettings as () => boolean)()).toBe(false);
+    expect(JSON.stringify(redirect.mock.calls)).toBe(
+      JSON.stringify([
+        [["如意翻译", "如意翻译设置"]],
+        [["如意翻译", "如意翻译设置"]],
+      ]),
+    );
+    expect((hostActions?.configureGlobalShortcut as () => boolean)()).toBe(true);
+    expect(redirectHotKeySetting).toHaveBeenCalledWith("用如意翻译", true);
 
     const notify = hostActions?.showTranslationNotification as (
       outcome: "completed" | "failed" | "timeout",

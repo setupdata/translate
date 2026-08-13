@@ -9,6 +9,9 @@
 - [可执行 JSON Schema](docs/prompts/ruyi-translate-v1.schema.json)
 - [第一版质量评测方案](docs/quality/ruyi-translate-v1-evaluation.md)
 - [ADR-0001：客户端使用用户密钥直连模型服务](docs/adr/0001-client-direct-model-access.md)
+- [用户手册](docs/user-manual.md)
+- [隐私与数据说明](docs/privacy.md)
+- [三平台验收记录](docs/platform-acceptance.md)
 - [领域术语](CONTEXT.md)
 
 项目使用 React、TypeScript、Vite 和 npm 开发。第一版计划支持 DeepSeek 官方渠道，以及用户配置的 Chat Completions 或 Responses 完整接口地址。
@@ -20,7 +23,7 @@ npm install
 npm run dev
 ```
 
-在 uTools 开发者工具中选择 `public/plugin.json` 接入开发。第一次翻译时，页面会要求填写 DeepSeek API Key；已保存的密钥不会回填到页面，只显示掩码和末尾四位。插件不会主动读取、监听或轮询剪贴板。
+保持 Vite 开发服务器运行，在 uTools 开发者工具中选择 `public/plugin.json` 接入开发。第一次翻译时，页面会要求填写 DeepSeek API Key；已保存的密钥不会回填到页面，只显示掩码和末尾四位。设置页可以打开 uTools 的全局快捷键设置；只有用户明确触发快捷键时，uTools 才会把当前选中文字交给匹配指令，插件不会主动读取、监听或轮询剪贴板。
 
 ## 数据与密钥说明
 
@@ -33,6 +36,8 @@ npm run dev
 当前源文本、译文、本次术语、附加翻译要求、质量风险，以及精译的分析结果、审校问题和修订状态只保留在插件进程内，不写入翻译历史、运行日志或遥测。普通隐藏插件时，只要插件进程仍然存活，当前请求会尽力继续，无数据超时和十分钟总时限仍然生效；后台完成、失败或超时后，插件默认发送一条不含源文、译文、术语或密钥的通用系统通知，用户可以在设置中关闭。点击通知只会返回当前翻译，不会自动复制或粘贴。后台继续和系统通知都不是可靠的离线任务：断网、退出 uTools、结束进程、强制终止、系统休眠或插件更新都可能中断请求，进程结束后也无法恢复。修改源文本、目标语言、质量模式、思考模式、行业配置、本次术语或附加翻译要求不会自动发送，旧译文仍可复制，但在重新翻译前不能粘贴回原窗口。使用“清空当前内容”会取消在途请求并删除这组进程内数据。模型服务如何保存或使用请求内容由对应服务的条款决定，不受插件控制。
 
 生产构建运行 `npm run build`，测试运行 `npm test`。测试会自动启动受控的本地 DeepSeek 兼容模拟服务，不需要真实 API Key，也不会访问真实模型服务；`npm run check:no-clipboard` 会单独检查实现代码中是否出现剪贴板读取、监听或定时轮询。
+
+需要制作本地测试包时运行 `npm run prepare:upxs`。脚本会生成经过发布检查的待打包目录和 SHA-256 文件清单；随后仍须在 uTools 开发者工具中选择该目录的 `plugin.json`，由开发者工具生成签名 UPXS。仓库不会把 ZIP 改名冒充 UPXS。详细步骤见 [本地 UPXS 打包说明](artifacts/README.md)。Windows、macOS 和 Linux 的真实入口、网络、通知、复制粘贴、主题及进程残留结果必须分别记录，自动测试不能代替实机验收。
 
 ## License
 

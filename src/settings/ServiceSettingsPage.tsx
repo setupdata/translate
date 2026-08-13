@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { useModalDialog } from "../accessibility/use-modal-dialog";
 import type {
   RuyiRuntimeBridge,
   ServiceConfigurationInput,
@@ -60,13 +61,17 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
   const [error, setError] = useState("");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [connectionMessage, setConnectionMessage] = useState("");
+  const [connectionMessageIsError, setConnectionMessageIsError] = useState(false);
   const [modelMessage, setModelMessage] = useState("");
+  const [modelMessageIsError, setModelMessageIsError] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [connectionOperationId, setConnectionOperationId] = useState<string | null>(null);
   const [modelOperationId, setModelOperationId] = useState<string | null>(null);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetMessage, setResetMessage] = useState("");
+  const [shortcutMessage, setShortcutMessage] = useState("");
+  const [shortcutMessageIsError, setShortcutMessageIsError] = useState(false);
   const [terminologyRevision, setTerminologyRevision] = useState(0);
   const operationSequence = useRef(0);
   const activeOperations = useRef(new Set<string>());
@@ -94,33 +99,6 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     };
   }, [runtime]);
 
-  useEffect(() => {
-    if (!pendingDeleteId) return;
-    deleteDialogCancelButton.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setPendingDeleteId(null);
-      deleteDialogTrigger.current?.focus();
-      deleteDialogTrigger.current = null;
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [pendingDeleteId]);
-
-  useEffect(() => {
-    if (!resetDialogOpen) return;
-    resetDialogCancelButton.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || resetting) return;
-      event.preventDefault();
-      setResetDialogOpen(false);
-      resetDialogTrigger.current?.focus();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [resetDialogOpen, resetting]);
-
   function nextOperationId(kind: "connection" | "models") {
     operationSequence.current += 1;
     return `${kind}-${operationSequence.current}`;
@@ -140,13 +118,13 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     setEditing(null);
     setFetchedModels([]);
     setConnectionMessage("");
+    setConnectionMessageIsError(false);
     setModelMessage("");
+    setModelMessageIsError(false);
   }
 
   function closeDeleteDialog() {
     setPendingDeleteId(null);
-    deleteDialogTrigger.current?.focus();
-    deleteDialogTrigger.current = null;
   }
 
   function cancelPendingOperation(
@@ -157,8 +135,12 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     activeOperations.current.delete(operationId);
     if (kind === "connection") {
       setConnectionOperationId(null);
+      setConnectionMessageIsError(false);
+      setConnectionMessage("连接测试已取消。");
     } else {
       setModelOperationId(null);
+      setModelMessageIsError(false);
+      setModelMessage("获取模型已取消。");
     }
   }
 
@@ -196,7 +178,9 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     setEditing(editableConfiguration(configuration));
     setFetchedModels(configuration.cachedModels);
     setConnectionMessage("");
+    setConnectionMessageIsError(false);
     setModelMessage("");
+    setModelMessageIsError(false);
     setError("");
   }
 
@@ -231,6 +215,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     setEditing(input);
     setFetchedModels([]);
     setConnectionMessage("");
+    setConnectionMessageIsError(false);
     setModelMessage("");
     setError("");
   }
@@ -279,6 +264,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     });
     if (!activeOperations.current.delete(operationId)) return;
     setConnectionOperationId(null);
+    setConnectionMessageIsError(result.status === "failed");
     setConnectionMessage(
       result.status === "completed" ? "连接测试成功。" : result.error.message,
     );
@@ -291,6 +277,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     activeOperations.current.add(operationId);
     setModelOperationId(operationId);
     setModelMessage("");
+    setModelMessageIsError(false);
     const result = await runtime.fetchServiceModels({
       operationId,
       configurationId,
@@ -298,6 +285,7 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
     if (!activeOperations.current.delete(operationId)) return;
     setModelOperationId(null);
     if (result.status === "failed") {
+      setModelMessageIsError(true);
       setModelMessage(result.error.message);
       return;
     }
@@ -330,10 +318,46 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
   const pendingDelete = state?.serviceConfigurations.find(
     (configuration) => configuration.id === pendingDeleteId,
   );
+  const deleteDialog = useModalDialog({
+    open: Boolean(pendingDelete),
+    initialFocusRef: deleteDialogCancelButton,
+    returnFocusRef: deleteDialogTrigger,
+    onDismiss: closeDeleteDialog,
+  });
+  const resetDialog = useModalDialog({
+    open: resetDialogOpen,
+    initialFocusRef: resetDialogCancelButton,
+    returnFocusRef: resetDialogTrigger,
+    onDismiss: () => setResetDialogOpen(false),
+    dismissDisabled: resetting,
+  });
 
   return (
     <main className="app-shell settings-page">
       <h1>设置</h1>
+      <section aria-labelledby="global-shortcut-heading" className="configuration-card">
+        <h2 id="global-shortcut-heading">全局快捷键</h2>
+        <p>
+          可让 uTools 在你明确触发快捷键时复制当前选中文字，并交给“用如意翻译”匹配指令处理。插件本身不会读取、监听或轮询剪贴板。
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            const opened = runtime.configureGlobalShortcut?.() ?? false;
+            setShortcutMessageIsError(!opened);
+            setShortcutMessage(
+              opened
+                ? "已打开 uTools 全局快捷键设置。"
+                : "当前环境无法打开全局快捷键设置。请在 uTools 设置的“全局功能”中配置“用如意翻译”。",
+            );
+          }}
+        >
+          配置全局快捷键
+        </button>
+        {shortcutMessage ? (
+          <p role={shortcutMessageIsError ? "alert" : "status"}>{shortcutMessage}</p>
+        ) : null}
+      </section>
       <section aria-labelledby="service-configurations-heading">
         <div className="settings-heading-row">
           <div>
@@ -653,7 +677,10 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
             </label>
 
             {editing.id && (
-              <div className="service-request-tools">
+              <div
+                className="service-request-tools"
+                aria-busy={Boolean(connectionOperationId || modelOperationId)}
+              >
                 <p>连接测试只发送固定短文本，可能产生少量模型费用。</p>
                 <div className="compact-actions">
                   <button
@@ -674,7 +701,12 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                     </button>
                   )}
                 </div>
-                {connectionMessage && <p role="status">{connectionMessage}</p>}
+                {connectionOperationId ? <p role="status">正在测试连接…</p> : null}
+                {connectionMessage && (
+                  <p role={connectionMessageIsError ? "alert" : "status"}>
+                    {connectionMessage}
+                  </p>
+                )}
                 <p>
                   获取前请确认模型列表地址：<span>{editing.modelListUrl}</span>
                 </p>
@@ -695,7 +727,10 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                     </button>
                   )}
                 </div>
-                {modelMessage && <p role="status">{modelMessage}</p>}
+                {modelOperationId ? <p role="status">正在获取模型列表…</p> : null}
+                {modelMessage && (
+                  <p role={modelMessageIsError ? "alert" : "status"}>{modelMessage}</p>
+                )}
               </div>
             )}
 
@@ -793,13 +828,17 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
 
       {pendingDelete && (
         <section
+          ref={deleteDialog}
           aria-labelledby="delete-configuration-heading"
+          aria-describedby="delete-configuration-description"
           aria-modal="true"
           className="confirmation-card"
           role="dialog"
         >
           <h2 id="delete-configuration-heading">确认删除服务配置</h2>
-          <p>将删除“{pendingDelete.name}”及其 API Key、模型列表缓存和性能数据。</p>
+          <p id="delete-configuration-description">
+            将删除“{pendingDelete.name}”及其 API Key、模型列表缓存和性能数据。
+          </p>
           <div className="dialog-actions">
             <button
               aria-label="取消删除"
@@ -815,7 +854,6 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
                 const confirmCurrent =
                   state?.currentServiceConfigurationId === pendingDelete.id;
                 setPendingDeleteId(null);
-                deleteDialogTrigger.current = null;
                 void runMutation(() =>
                   runtime.deleteServiceConfiguration(
                     pendingDelete.id,
@@ -831,13 +869,15 @@ export function ServiceSettingsPage({ runtime }: { runtime: RuyiRuntimeBridge })
       )}
       {resetDialogOpen && (
         <section
+          ref={resetDialog}
           aria-labelledby="reset-all-settings-heading"
+          aria-describedby="reset-all-settings-description"
           aria-modal="true"
           className="confirmation-card"
           role="dialog"
         >
           <h2 id="reset-all-settings-heading">确认恢复所有设置</h2>
-          <p>
+          <p id="reset-all-settings-description">
             此操作会删除所有服务配置和 API Key、模型列表缓存、连接确认、性能数据、通知和默认设置、术语库、行业配置和参考译例，并清除当前翻译、取消在途任务。
           </p>
           <p>

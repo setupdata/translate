@@ -53,12 +53,12 @@ function completedResponse(content: string) {
 }
 
 function lifecycleHost(showImplementation?: (outcome: string) => void) {
-  let enterHandler: (() => void) | undefined;
+  let enterHandler: ((action?: unknown) => void) | undefined;
   let outHandler: ((isKill: boolean) => void) | undefined;
   const showTranslationNotification = vi.fn(showImplementation);
   return {
     actions: {
-      onPluginEnter(handler: () => void) {
+      onPluginEnter(handler: (action?: unknown) => void) {
         enterHandler = handler;
       },
       onPluginOut(handler: (isKill: boolean) => void) {
@@ -66,9 +66,9 @@ function lifecycleHost(showImplementation?: (outcome: string) => void) {
       },
       showTranslationNotification,
     },
-    enter() {
+    enter(action?: unknown) {
       expect(enterHandler).toBeTypeOf("function");
-      enterHandler?.();
+      enterHandler?.(action);
     },
     out(isKill: boolean) {
       expect(outHandler).toBeTypeOf("function");
@@ -293,5 +293,40 @@ describe("background translation lifecycle", () => {
       status: "completed",
       translation: "译文",
     });
+  });
+
+  it("forwards only named entry actions and keeps host navigation behind business methods", () => {
+    const { createRuyiRuntime } = require(runtimePath);
+    let enterHandler: ((action: unknown) => void) | undefined;
+    const openSettings = vi.fn(() => true);
+    const configureGlobalShortcut = vi.fn(() => true);
+    const runtime = createRuyiRuntime({
+      plainStorage: memoryStorage(),
+      cryptoStorage: memoryStorage(),
+      transport: deferredTransport(),
+      servicePreset,
+      hostActions: {
+        onPluginEnter(handler: (action: unknown) => void) {
+          enterHandler = handler;
+        },
+        openSettings,
+        configureGlobalShortcut,
+      },
+    });
+    enterHandler?.({ code: "settings", type: "text", payload: 42 });
+    enterHandler?.({ code: "unknown", type: "text", payload: "ignored" });
+    const listener = vi.fn();
+    const unsubscribe = runtime.subscribePluginEntry(listener);
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({ code: "settings", type: "text", payload: "" });
+    expect(runtime.openSettings()).toBe(true);
+    expect(runtime.configureGlobalShortcut()).toBe(true);
+    expect(openSettings).toHaveBeenCalledOnce();
+    expect(configureGlobalShortcut).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    enterHandler?.({ code: "translate", type: "over", payload: "next" });
+    expect(listener).toHaveBeenCalledOnce();
   });
 });

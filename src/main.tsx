@@ -14,6 +14,7 @@ if (!rootElement) {
 const root = createRoot(rootElement);
 const runtime = getBrowserRuntime();
 let renderSequence = 0;
+let receivedPluginEntry = false;
 
 function render(intent: ReturnType<typeof resolveEntryIntent>): void {
   renderSequence += 1;
@@ -22,13 +23,12 @@ function render(intent: ReturnType<typeof resolveEntryIntent>): void {
   );
 }
 
-render(resolveEntryIntent({ code: "translate", type: "text", payload: "" }));
-
-window.utools?.onPluginEnter((action) => {
+runtime.subscribePluginEntry?.((action) => {
   if (action.code !== "translate" && action.code !== "settings") {
     return;
   }
 
+  receivedPluginEntry = true;
   render(
     resolveEntryIntent({
       code: action.code,
@@ -37,3 +37,7 @@ window.utools?.onPluginEnter((action) => {
     }),
   );
 });
+
+if (!receivedPluginEntry) {
+  render(resolveEntryIntent({ code: "translate", type: "text", payload: "" }));
+}

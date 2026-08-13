@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { useModalDialog } from "../accessibility/use-modal-dialog";
 import type {
   DomainProfile,
   ReferenceTranslation,
@@ -110,10 +111,8 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
   } | null>(null);
   const deleteTrigger = useRef<HTMLButtonElement | null>(null);
   const deleteCancel = useRef<HTMLButtonElement | null>(null);
-  const restoreDeleteFocus = useRef(false);
   const csvImportTrigger = useRef<HTMLInputElement | null>(null);
   const csvCancel = useRef<HTMLButtonElement | null>(null);
-  const restoreCsvFocus = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -131,32 +130,13 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
   }, [runtime]);
 
   useEffect(() => {
-    if (pendingDeletion) {
-      deleteCancel.current?.focus();
-    } else if (restoreDeleteFocus.current) {
-      restoreDeleteFocus.current = false;
-      deleteTrigger.current?.focus();
-    }
-  }, [pendingDeletion]);
-
-  useEffect(() => {
     const previewToken = csvPreview?.previewToken;
     return () => {
       if (previewToken) runtime.discardTermbaseCsvPreview(previewToken);
     };
   }, [csvPreview?.previewToken, runtime]);
 
-  useEffect(() => {
-    if (csvPreview) {
-      csvCancel.current?.focus();
-    } else if (restoreCsvFocus.current) {
-      restoreCsvFocus.current = false;
-      csvImportTrigger.current?.focus();
-    }
-  }, [csvPreview]);
-
   function cancelDeletion() {
-    restoreDeleteFocus.current = true;
     setPendingDeletion(null);
   }
 
@@ -247,7 +227,6 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
     if (csvPreview?.previewToken) {
       runtime.discardTermbaseCsvPreview(csvPreview.previewToken);
     }
-    restoreCsvFocus.current = true;
     setCsvBytes(null);
     setCsvPreview(null);
   }
@@ -273,6 +252,19 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
       setError(errorMessage(exportError));
     }
   }
+
+  const csvPreviewDialog = useModalDialog({
+    open: Boolean(csvPreview),
+    initialFocusRef: csvCancel,
+    returnFocusRef: csvImportTrigger,
+    onDismiss: cancelCsvPreview,
+  });
+  const deleteDialog = useModalDialog({
+    open: Boolean(pendingDeletion),
+    initialFocusRef: deleteCancel,
+    returnFocusRef: deleteTrigger,
+    onDismiss: cancelDeletion,
+  });
 
   return (
     <section aria-labelledby="terminology-settings-heading">
@@ -833,19 +825,15 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
 
           {csvPreview && (
             <section
+              ref={csvPreviewDialog}
               className="configuration-card"
               role="dialog"
               aria-modal="true"
               aria-labelledby="csv-preview-heading"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelCsvPreview();
-                }
-              }}
+              aria-describedby="csv-preview-description"
             >
               <h3 id="csv-preview-heading">预览术语 CSV 导入</h3>
-              <p>
+              <p id="csv-preview-description">
                 将导入到“{csvPreview.termbaseName}”：{csvPreview.rowCount} 条可导入记录
               </p>
               <h4>字段映射</h4>
@@ -909,16 +897,12 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
           )}
           {pendingDeletion && (
             <section
+              ref={deleteDialog}
               className="configuration-card"
               role="dialog"
               aria-modal="true"
               aria-labelledby="terminology-delete-heading"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelDeletion();
-                }
-              }}
+              aria-describedby="terminology-delete-description"
             >
               <h3 id="terminology-delete-heading">
                 {pendingDeletion.kind === "termbase"
@@ -927,7 +911,7 @@ export function TerminologySettingsSection({ runtime }: { runtime: RuyiRuntimeBr
                     ? "确认删除行业配置"
                     : "确认删除参考译例"}
               </h3>
-              <p>
+              <p id="terminology-delete-description">
                 删除“{pendingDeletion.name}”后无法撤销。
                 {pendingDeletion.kind === "termbase"
                   ? "引用它的行业配置也会解除关联。"

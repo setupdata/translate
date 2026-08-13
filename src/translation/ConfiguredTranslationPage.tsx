@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useModalDialog } from "../accessibility/use-modal-dialog";
 import type {
   CurrentTranslationInputs,
   CurrentTranslationSnapshot,
@@ -148,6 +149,7 @@ export function ConfiguredTranslationPage({
     useState<ParallelTranslationProgress | null>(null);
   const [confirmRiskCopy, setConfirmRiskCopy] = useState(false);
   const [hostActionMessage, setHostActionMessage] = useState("");
+  const [cancellationMessage, setCancellationMessage] = useState("");
   const [snapshotStale, setSnapshotStale] = useState(false);
   const taskId = useRef(createTaskId());
   const requestGeneration = useRef(0);
@@ -160,7 +162,7 @@ export function ConfiguredTranslationPage({
   const riskCopyTrigger = useRef<HTMLButtonElement | null>(null);
   const riskCopyCancel = useRef<HTMLButtonElement | null>(null);
   const referencePreviewCancel = useRef<HTMLButtonElement | null>(null);
-  const restoreRiskCopyFocus = useRef(false);
+  const sendConfirmationCancel = useRef<HTMLButtonElement | null>(null);
 
   const applyCurrentSnapshot = useCallback(
     (snapshot: CurrentTranslationSnapshot | null) => {
@@ -183,6 +185,7 @@ export function ConfiguredTranslationPage({
         setPrecisionStage(null);
         setConfirmRiskCopy(false);
         setHostActionMessage("");
+        setCancellationMessage("");
         setSnapshotStale(false);
         return;
       }
@@ -290,7 +293,6 @@ export function ConfiguredTranslationPage({
   );
 
   const closeRiskCopy = useCallback(() => {
-    restoreRiskCopyFocus.current = true;
     setConfirmRiskCopy(false);
   }, []);
 
@@ -298,6 +300,11 @@ export function ConfiguredTranslationPage({
     runtime.cancelTranslation(taskId.current);
     setResult(null);
     setReferencePreviewSelection([]);
+  }, [runtime]);
+
+  const cancelSendConfirmation = useCallback(() => {
+    runtime.cancelTranslation(taskId.current);
+    setResult(null);
   }, [runtime]);
 
   useEffect(() => {
@@ -340,6 +347,7 @@ export function ConfiguredTranslationPage({
       }
       setConfirmRiskCopy(false);
       setHostActionMessage("");
+      setCancellationMessage("");
       if (options.beginNewTask) {
         runtime.cancelTranslation(taskId.current);
         taskId.current = createTaskId();
@@ -498,6 +506,7 @@ export function ConfiguredTranslationPage({
       setIsTranslating(false);
       setConfirmRiskCopy(false);
       setHostActionMessage("");
+      setCancellationMessage("");
       setSnapshotStale(false);
     }
     void Promise.all([
@@ -653,47 +662,48 @@ export function ConfiguredTranslationPage({
         event.preventDefault();
         runtime.cancelTranslation(taskId.current);
         setIsTranslating(false);
+        setPrecisionStage(null);
+        setCancellationMessage("翻译已取消；已经收到的部分译文会继续保留。");
       }
     }
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
   }, [isTranslating, runtime]);
 
-  useEffect(() => {
-    if (!confirmRiskCopy) {
-      if (restoreRiskCopyFocus.current) {
-        restoreRiskCopyFocus.current = false;
-        riskCopyTrigger.current?.focus();
-      }
-      return undefined;
-    }
-    riskCopyCancel.current?.focus();
-    function handleRiskDialogEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeRiskCopy();
-      }
-    }
-    window.addEventListener("keydown", handleRiskDialogEscape);
-    return () => window.removeEventListener("keydown", handleRiskDialogEscape);
-  }, [closeRiskCopy, confirmRiskCopy]);
+  const riskCopyDialog = useModalDialog({
+    open: confirmRiskCopy,
+    initialFocusRef: riskCopyCancel,
+    returnFocusRef: riskCopyTrigger,
+    onDismiss: closeRiskCopy,
+  });
+  const referencePreviewDialog = useModalDialog({
+    open: Boolean(referenceConfirmation),
+    initialFocusRef: referencePreviewCancel,
+    onDismiss: cancelReferencePreview,
+  });
+  const sendConfirmationDialog = useModalDialog({
+    open: Boolean(confirmation),
+    initialFocusRef: sendConfirmationCancel,
+    onDismiss: cancelSendConfirmation,
+  });
 
-  useEffect(() => {
-    if (!referenceConfirmation) return undefined;
-    referencePreviewCancel.current?.focus();
-    function handleReferencePreviewEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        cancelReferencePreview();
-      }
-    }
-    window.addEventListener("keydown", handleReferencePreviewEscape);
-    return () => window.removeEventListener("keydown", handleReferencePreviewEscape);
-  }, [cancelReferencePreview, referenceConfirmation]);
+  function openSettingsPage() {
+    const opened = runtime.openSettings?.() ?? false;
+    setHostActionMessage(
+      opened
+        ? "正在打开如意翻译设置。"
+        : "当前环境无法直接打开设置，请使用“如意翻译设置”指令。",
+    );
+  }
 
   return (
     <main>
-      <h1>如意翻译</h1>
+      <div className="app-heading-row">
+        <h1>如意翻译</h1>
+        <button type="button" onClick={openSettingsPage}>
+          打开设置
+        </button>
+      </div>
       <p className="task-summary">
         目标语言：{targetLanguage.displayName ?? targetLanguage.modelLabel}
         <span aria-hidden="true"> · </span>
@@ -1204,12 +1214,14 @@ export function ConfiguredTranslationPage({
               runtime.cancelTranslation(taskId.current);
               setIsTranslating(false);
               setPrecisionStage(null);
+              setCancellationMessage("翻译已取消；已经收到的部分译文会继续保留。");
             }}
           >
             取消翻译
           </button>
         </section>
       ) : null}
+      {cancellationMessage ? <p role="status">{cancellationMessage}</p> : null}
 
       {(result?.status === "completed" || result?.status === "failed") &&
       result.parallel?.fallbackReason ? (
@@ -1218,7 +1230,7 @@ export function ConfiguredTranslationPage({
 
       {result?.status === "configuration_required" &&
       result.reason === "missing_configuration" ? (
-        <section aria-labelledby="missing-configuration-heading">
+        <section role="alert" aria-labelledby="missing-configuration-heading">
           <h2 id="missing-configuration-heading">需要服务配置</h2>
           <p>当前没有可用服务配置，请打开“如意翻译设置”添加或修复配置。</p>
           <p>源文本仅保留在当前插件进程内，不会发送。</p>
@@ -1227,7 +1239,7 @@ export function ConfiguredTranslationPage({
 
       {result?.status === "configuration_required" &&
       result.reason === "invalid_configuration" ? (
-        <section aria-labelledby="invalid-configuration-heading">
+        <section role="alert" aria-labelledby="invalid-configuration-heading">
           <h2 id="invalid-configuration-heading">服务配置已停用</h2>
           <p>
             {result.serviceConfiguration?.migrationError ??
@@ -1293,13 +1305,15 @@ export function ConfiguredTranslationPage({
 
       {referenceConfirmation ? (
         <section
+          ref={referencePreviewDialog}
           role="dialog"
           aria-modal="true"
           aria-labelledby="reference-confirmation-heading"
+          aria-describedby="reference-confirmation-description"
           className="confirmation-card"
         >
           <h2 id="reference-confirmation-heading">确认参考译例</h2>
-          <p>
+          <p id="reference-confirmation-description">
             以下译例由本地文本相似度选出。只有勾选的译例会随本次请求发送，最多三条。
           </p>
           {qualityMode === "precision" ? (
@@ -1368,9 +1382,11 @@ export function ConfiguredTranslationPage({
 
       {confirmation ? (
         <section
+          ref={sendConfirmationDialog}
           role="dialog"
           aria-modal="true"
           aria-labelledby="send-confirmation-heading"
+          aria-describedby="send-confirmation-description"
           className="confirmation-card"
         >
           <h2 id="send-confirmation-heading">确认发送翻译数据</h2>
@@ -1382,7 +1398,7 @@ export function ConfiguredTranslationPage({
             <dt>协议</dt>
             <dd>{confirmation.preview.protocol}</dd>
           </dl>
-          <p>将发送：</p>
+          <p id="send-confirmation-description">将发送：</p>
           <ul>
             {confirmation.preview.dataSent.map((item) => (
               <li key={item}>{item}</li>
@@ -1413,11 +1429,9 @@ export function ConfiguredTranslationPage({
           </p>
           <div className="dialog-actions">
             <button
+              ref={sendConfirmationCancel}
               type="button"
-              onClick={() => {
-                runtime.cancelTranslation(taskId.current);
-                setResult(null);
-              }}
+              onClick={cancelSendConfirmation}
             >
               取消
             </button>
@@ -1635,7 +1649,29 @@ export function ConfiguredTranslationPage({
                 改用标准模式
               </button>
             </div>
-          ) : null}
+          ) : (
+            <button
+              type="button"
+              disabled={!configuration || isSwitchingService}
+              onClick={() => {
+                if (!configuration || isSwitchingService) return;
+                void startTranslation(configuration, sourceText, {
+                  beginNewTask: true,
+                  targetLanguage,
+                  domainProfileId,
+                  additionalRequirements,
+                  taskTerms,
+                  referenceTranslationIds,
+                  parallelAcceleration,
+                  parallelConcurrency,
+                  qualityMode: "standard",
+                  thinkingEnabled: false,
+                });
+              }}
+            >
+              重试翻译
+            </button>
+          )}
         </section>
       ) : null}
       {result?.status === "failed" && partialTranslation ? (
@@ -1694,13 +1730,17 @@ export function ConfiguredTranslationPage({
       (result?.status === "completed" ||
         (result?.status === "failed" && result.partialTranslation)) ? (
         <section
+          ref={riskCopyDialog}
           role="dialog"
           aria-modal="true"
           aria-labelledby="risk-copy-heading"
+          aria-describedby="risk-copy-description"
           className="confirmation-card"
         >
           <h2 id="risk-copy-heading">确认复制风险译文</h2>
-          <p>本地检查发现确定性严重风险。复制前请确认你会人工复核译文。</p>
+          <p id="risk-copy-description">
+            本地检查发现确定性严重风险。复制前请确认你会人工复核译文。
+          </p>
           <div className="dialog-actions">
             <button ref={riskCopyCancel} type="button" onClick={closeRiskCopy}>
               取消
@@ -1736,7 +1776,7 @@ export function ConfiguredTranslationPage({
       ) : null}
 
       {errorMessage ? <p role="alert">{errorMessage}</p> : null}
-      {hostActionMessage ? <p aria-live="polite">{hostActionMessage}</p> : null}
+      {hostActionMessage ? <p role="status">{hostActionMessage}</p> : null}
     </main>
   );
 }

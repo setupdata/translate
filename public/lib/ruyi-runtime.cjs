@@ -466,6 +466,7 @@ function createRuyiRuntime({
   const preparingTaskIds = new Set();
   const cancelledPreparingTaskIds = new Set();
   const currentTranslationListeners = new Set();
+  const pluginEntryListeners = new Set();
   const serviceOperations = new Map();
   const blockedSettingsSources = new WeakMap();
   const blockedTerminologyStates = new WeakSet();
@@ -475,10 +476,34 @@ function createRuyiRuntime({
   let currentTranslationRevision = 0;
   let pluginHidden = false;
   let processEnding = false;
+  let pendingPluginEntry = null;
 
-  function handlePluginEnter() {
+  function handlePluginEnter(action) {
     pluginHidden = false;
     processEnding = false;
+    if (
+      !action ||
+      (action.code !== "translate" && action.code !== "settings") ||
+      typeof action.type !== "string"
+    ) {
+      return;
+    }
+    const entry = Object.freeze({
+      code: action.code,
+      type: action.type,
+      payload: typeof action.payload === "string" ? action.payload : "",
+    });
+    if (pluginEntryListeners.size === 0) {
+      pendingPluginEntry = entry;
+      return;
+    }
+    for (const listener of pluginEntryListeners) {
+      try {
+        listener(entry);
+      } catch {
+        // A renderer entry listener must not break host lifecycle handling.
+      }
+    }
   }
 
   function handlePluginOut(isKill) {
@@ -499,6 +524,39 @@ function createRuyiRuntime({
       hostActions.onPluginOut(handlePluginOut);
     } catch {
       // Host lifecycle callbacks are best effort and must not prevent startup.
+    }
+  }
+
+  function subscribePluginEntry(listener) {
+    if (typeof listener !== "function") return () => undefined;
+    pluginEntryListeners.add(listener);
+    if (pendingPluginEntry) {
+      const entry = pendingPluginEntry;
+      pendingPluginEntry = null;
+      try {
+        listener(entry);
+      } catch {
+        // The queued host entry must not break runtime startup.
+      }
+    }
+    return () => pluginEntryListeners.delete(listener);
+  }
+
+  function openSettings() {
+    if (typeof hostActions.openSettings !== "function") return false;
+    try {
+      return Boolean(hostActions.openSettings());
+    } catch {
+      return false;
+    }
+  }
+
+  function configureGlobalShortcut() {
+    if (typeof hostActions.configureGlobalShortcut !== "function") return false;
+    try {
+      return Boolean(hostActions.configureGlobalShortcut());
+    } catch {
+      return false;
     }
   }
 
@@ -3809,6 +3867,9 @@ function createRuyiRuntime({
   }
 
   return Object.freeze({
+    subscribePluginEntry,
+    openSettings,
+    configureGlobalShortcut,
     getTerminologyState,
     saveTermbase,
     deleteTermbase,

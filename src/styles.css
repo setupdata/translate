@@ -1,4 +1,7 @@
 :root {
+  --focus-ring: #6d28d9;
+  --alert-text: #8a1538;
+  --accent-text: #5b217a;
   color: #25212e;
   background: #f5f2fb;
   font-family:
@@ -100,7 +103,7 @@ textarea:focus-visible,
 input:focus-visible,
 select:focus-visible,
 button:focus-visible {
-  outline: 3px solid rgb(106 70 145 / 30%);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -146,6 +149,19 @@ button:disabled {
   box-shadow: 0 12px 36px rgb(51 36 67 / 8%);
 }
 
+[role="dialog"][aria-modal="true"] {
+  position: fixed;
+  z-index: 1000;
+  inset: 16px;
+  width: min(760px, calc(100% - 32px));
+  max-height: calc(100vh - 32px);
+  margin: auto;
+  overflow: auto;
+  box-shadow:
+    0 0 0 100vmax rgb(22 17 28 / 52%),
+    0 20px 60px rgb(22 17 28 / 28%);
+}
+
 .configuration-card h2,
 .configuration-card p,
 .confirmation-card h2,
@@ -182,6 +198,7 @@ button:disabled {
   gap: 14px;
 }
 
+.app-heading-row,
 .settings-heading-row,
 .service-configuration-card,
 .compact-actions {
@@ -191,9 +208,14 @@ button:disabled {
   gap: 10px;
 }
 
+.app-heading-row,
 .settings-heading-row,
 .service-configuration-card {
   justify-content: space-between;
+}
+
+.app-heading-row button {
+  min-width: auto;
 }
 
 .settings-heading-row h2,
@@ -225,7 +247,7 @@ button:disabled {
 }
 
 .service-configuration-card strong {
-  color: #63407f;
+  color: var(--accent-text);
 }
 
 .compact-actions {
@@ -255,7 +277,7 @@ button:disabled {
 }
 
 .file-action:focus-within {
-  outline: 3px solid rgb(106 70 145 / 30%);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -421,7 +443,7 @@ button:disabled {
 
 [role="alert"] {
   margin: 0;
-  color: #a3263e;
+  color: var(--alert-text);
 }
 
 @media (max-width: 600px) {
@@ -436,6 +458,9 @@ button:disabled {
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --focus-ring: #c4b5fd;
+    --alert-text: #ffb3c1;
+    --accent-text: #e9d5ff;
     color: #f0ebf5;
     background: #18151d;
   }
@@ -467,6 +492,7 @@ button:disabled {
 
   .task-summary,
   .current-translation-note,
+  .task-terms-editor p,
   .reference-translation-choice small,
   .confirmation-card dt {
     color: #bdb3c7;
@@ -490,5 +516,15 @@ button:disabled {
 
   .translation-progress [role="status"] {
     color: #cbc2d4;
+  }
+}
+
+@media (forced-colors: active) {
+  textarea:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  button:focus-visible,
+  .file-action:focus-within {
+    outline-color: CanvasText;
   }
 }

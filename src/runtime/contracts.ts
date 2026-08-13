@@ -473,7 +473,18 @@ export type CurrentTranslationSnapshot = {
   stale: boolean;
 };
 
+export type RuntimePluginEntryAction = {
+  code: "translate" | "settings";
+  type: string;
+  payload: string;
+};
+
 export interface RuyiRuntimeBridge {
+  subscribePluginEntry?(
+    listener: (action: RuntimePluginEntryAction) => void,
+  ): () => void;
+  openSettings?(): boolean;
+  configureGlobalShortcut?(): boolean;
   getTerminologyState(): Promise<TerminologyState>;
   saveTermbase(input: Termbase): Promise<TerminologyState>;
   deleteTermbase(termbaseId: string): Promise<TerminologyState>;

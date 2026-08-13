@@ -57,6 +57,15 @@ window.ruyiTranslation = createRuyiRuntime({
         host.onPluginOut(callback);
       }
     },
+    openSettings() {
+      if (!host || typeof host.redirect !== "function") return false;
+      return Boolean(host.redirect(["如意翻译", "如意翻译设置"]));
+    },
+    configureGlobalShortcut() {
+      if (!host || typeof host.redirectHotKeySetting !== "function") return false;
+      host.redirectHotKeySetting("用如意翻译", true);
+      return true;
+    },
     showTranslationNotification(outcome) {
       const body = TRANSLATION_NOTIFICATION_MESSAGES[outcome];
       if (body && host && typeof host.showNotification === "function") {

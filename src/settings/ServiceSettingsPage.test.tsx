@@ -51,6 +51,22 @@ const initialState: ServiceConfigurationsState = {
 };
 
 describe("ServiceSettingsPage", () => {
+  it("opens the uTools global shortcut settings only after the user clicks", async () => {
+    const configureGlobalShortcut = vi.fn(() => true);
+    const runtime = createRuntimeStub({
+      getServiceConfigurations: vi.fn(async () => initialState),
+      configureGlobalShortcut,
+    });
+
+    render(<ServiceSettingsPage runtime={runtime} />);
+
+    await screen.findByText("DeepSeek Flash");
+    expect(configureGlobalShortcut).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "配置全局快捷键" }));
+    expect(configureGlobalShortcut).toHaveBeenCalledOnce();
+    expect(screen.getByRole("status")).toHaveTextContent("已打开 uTools 全局快捷键设置");
+  });
+
   it("shows the default-on background notification preference and persists disabling it", async () => {
     const disabledState = {
       ...initialState,
@@ -265,6 +281,30 @@ describe("ServiceSettingsPage", () => {
     expect(screen.getByRole("option", { name: "listed-model" })).toBeInTheDocument();
   });
 
+  it("announces connection and model failures as errors", async () => {
+    const runtime = createRuntimeStub({
+      getServiceConfigurations: vi.fn(async () => initialState),
+      testServiceConnection: vi.fn(async () => ({
+        status: "failed" as const,
+        error: { code: "network_error" as const, message: "连接模型服务失败。" },
+      })),
+      fetchServiceModels: vi.fn(async () => ({
+        status: "failed" as const,
+        error: { code: "timeout" as const, message: "获取模型列表超时。" },
+      })),
+    });
+
+    render(<ServiceSettingsPage runtime={runtime} />);
+    await screen.findByText("Custom One");
+    await userEvent.click(screen.getByRole("button", { name: "编辑 Custom One" }));
+    await userEvent.click(screen.getByRole("button", { name: "测试连接" }));
+    const connectionError = await screen.findByText("连接模型服务失败。");
+    expect(connectionError).toHaveAttribute("role", "alert");
+    await userEvent.click(screen.getByRole("button", { name: "获取模型" }));
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.some((alert) => alert.textContent === "获取模型列表超时。")).toBe(true);
+  });
+
   it("cancels in-flight service operations when the editor closes", async () => {
     let resolveConnection: (
       result: Awaited<ReturnType<RuyiRuntimeBridge["testServiceConnection"]>>,
@@ -286,6 +326,7 @@ describe("ServiceSettingsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "编辑 Custom One" }));
     await userEvent.click(screen.getByRole("button", { name: "测试连接" }));
     await waitFor(() => expect(runtime.testServiceConnection).toHaveBeenCalledOnce());
+    expect(screen.getByRole("status")).toHaveTextContent("正在测试连接");
 
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
 
